@@ -127,7 +127,7 @@ Slice by §34 journeys, demo each:
 5. **Messaging + Notifications (wk11):** 1:1 text+image chat, block/report, order-linked threads, in-app+email+push (§24).
 6. **Reviews + Admin + Safety (wk12):** verified-purchase reviews, report flow, admin queues for users/listings/orders/payments/disputes (§28), suspend/ban, audit logs.
 
-Definition of done per slice: happy path + empty/error states + RBAC tests + webhook replay test + mobile responsive.
+Definition of done per slice: happy path + empty/error states + RBAC tests + webhook replay test + mobile responsive + hosted locally via gate above.
 
 ---
 
@@ -151,6 +151,7 @@ Definition of done per slice: happy path + empty/error states + RBAC tests + web
 ## Phase 8 — DevOps & Observability (local device)
 
 - CI: typecheck/lint/unit/e2e on GitHub Actions (build only, no Vercel deploy). CD: `docker compose pull && up -d` on local device; Caddy for TLS/reverse-proxy.
+- Host gate (mandatory after every action/phase): 1) `git add + commit + push origin main`, 2) `docker compose up -d --build`, 3) verify `web/api/postgres/redis/meili` healthy + smoke test home/search/checkout, 4) tag `phase-N-complete`. No phase is done until hosted locally + pushed.
 - Observability: structured logs, Sentry, payment/webhook dashboard, escrow pending alert, dispute SLA alert. Healthchecks per container.
 - Backups: nightly `pg_dump` to R2 (`backups/` prefix) + local volume; test-restore monthly. Runbooks for failed webhook (replay via Tunnel URL), stuck escrow, chargeback. No Supabase/Vercel dependency.
 
@@ -162,6 +163,12 @@ MVP events: signup, verify, listing_created, search, view, chat_started, cart_ad
 Admin dashboard v1: users/sellers/listings/orders/completed/cancelled/disputed/refunds/GTV/revenue/payouts/pending-escrow + engagement counts. Track §37 KPIs weekly.
 
 ---
+
+## Hosting Gate — After Every Action/Phase (owner rule)
+
+After every slice/phase: `docker compose up -d --build` on local device → migrate → seed → smoke test → tag `phase-X-hosted`.
+- Smoke: home, search, listing detail, auth, cart preview, webhook replay, admin login via Caddy URL.
+- If red: fix-forward, no new phase starts unhosted. Log host URL + commit SHA in GitHub Release notes.
 
 ## Phase 10 — Launch then Phase 2 (§36, post-MVP)
 
