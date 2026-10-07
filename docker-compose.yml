@@ -1,0 +1,35 @@
+# Full local stack (requires Docker Desktop — not installed on this device yet).
+# Once Docker is installed: `docker compose up -d --build`
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: josh
+      POSTGRES_USER: josh
+      POSTGRES_PASSWORD: josh
+    volumes: [pgdata:/var/lib/postgresql/data]
+    ports: ["5432:5432"]
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+  meili:
+    image: getmeili/meilisearch:v1.8
+    environment: [MEILI_MASTER_KEY=local-dev-key]
+    ports: ["7700:7700"]
+    volumes: [meili:/meili_data]
+  api:
+    build: ./apps/api
+    environment:
+      API_PORT: 4000
+      DATABASE_URL: postgres://josh:josh@postgres:5432/josh
+    ports: ["4000:4000"]
+    depends_on: [postgres, redis]
+  web:
+    build: ./apps/web
+    environment:
+      WEB_PORT: 3000
+    ports: ["3000:3000"]
+    depends_on: [api]
+volumes:
+  pgdata:
+  meili:
