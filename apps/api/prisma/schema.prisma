@@ -1,0 +1,236 @@
+// Prisma schema — applies in Docker phase (`npx prisma migrate dev`).
+// DB: local Postgres 16 (docker-compose.yml). Money in kobo (Int).
+// Better Auth tables first, then domain tables (IMPLEMENTATION_PLAN.md Phase 3).
+//
+// Install later: npm i prisma @prisma/client
+// Then: npx prisma init (already configured here) + npx prisma migrate dev
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---- Better Auth ----
+model User {
+  id                String    @id @default(cuid())
+  email             String    @unique
+  emailVerified     Boolean   @default(false)
+  phone             String?   @unique
+  phoneVerified     Boolean   @default(false)
+  name              String?
+  image             String?
+  role              String    @default("buyer") // buyer | seller | business | admin
+  verificationLevel Int       @default(0)
+  kycStatus         String    @default("none")
+  location          String?
+  isBusiness        Boolean   @default(false)
+  createdAt         DateTime  @default(now())
+  sessions          Session[]
+  accounts          Account[]
+  businesses        Business[]
+  products          Product[]
+  services          Service[]
+  ordersBought      Order[]   @relation("buyer")
+  ordersSold        Order[]   @relation("seller")
+  reviews           Review[]
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  token     String   @unique
+  createdAt DateTime @default(now())
+}
+
+model Account {
+  id       String @id @default(cuid())
+  userId   String
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider String
+  providerAccountId String
+  @@unique([provider, providerAccountId])
+}
+
+model Verification {
+  id         String   @id @default(cuid())
+  identifier String
+  value      String
+  expiresAt  DateTime
+  @@unique([identifier, value])
+}
+
+// ---- Domain ----
+model Business {
+  id                 String  @id @default(cuid())
+  ownerId            String
+  owner              User    @relation(fields: [ownerId], references: [id])
+  name               String
+  logo               String?
+  banner             String?
+  description        String?
+  location           String?
+  verificationStatus String  @default("none")
+  policies           Json?
+}
+
+model Category {
+  id       String     @id @default(cuid())
+  parentId String?
+  name     String
+  slug     String     @unique
+  sortOrder Int      @default(0)
+}
+
+model Product {
+  id               String  @id @default(cuid())
+  sellerId         String
+  seller           User    @relation(fields: [sellerId], references: [id])
+  title            String
+  description      String
+  categoryId       String
+  priceKobo        Int
+  stock            Int     @default(0)
+  condition        String  @default("new")
+  location         String?
+  deliveryMethods  Json?
+  variations       Json?
+  sku              String?
+  status           String  @default("draft")
+  createdAt        DateTime @default(now())
+}
+
+model Service {
+  id          String   @id @default(cuid())
+  providerId  String
+  provider    User     @relation(fields: [providerId], references: [id])
+  title       String
+  description String
+  categoryId  String
+  priceKobo   Int
+  location    String?
+  isOnline    Boolean  @default(false)
+  availability Json?
+  packages    Json?
+  portfolio   Json?
+  status      String   @default("draft")
+  createdAt   DateTime @default(now())
+}
+
+model Order {
+  id           String   @id @default(cuid())
+  buyerId      String
+  buyer        User     @relation("buyer", fields: [buyerId], references: [id])
+  sellerId     String
+  seller       User     @relation("seller", fields: [sellerId], references: [id])
+  type         String   // product | service
+  status       String   @default("pending")
+  subtotalKobo Int
+  deliveryKobo Int      @default(0)
+  platformKobo Int      @default(0)
+  totalKobo    Int
+  deliveryInfo Json?
+  createdAt    DateTime @default(now())
+  escrow       EscrowLedger?
+  payments     Payment[]
+  refunds      Refund[]
+  disputes     Dispute[]
+  reviews      Review[]
+}
+
+model EscrowLedger {
+  id        String   @id @default(cuid())
+  orderId   String   @unique
+  order     Order    @relation(fields: [orderId], references: [id])
+  amountKobo Int
+  state     String   @default("held") // held | released | refunded | disputed
+  auditTrail Json?
+}
+
+model Payment {
+  id         String   @id @default(cuid())
+  orderId    String
+  order      Order    @relation(fields: [orderId], references: [id])
+  provider   String   // paystack | flutterwave
+  reference  String   @unique
+  amountKobo Int
+  status     String   @default("pending")
+  webhookLog Json?
+}
+
+model Refund {
+  id         String @id @default(cuid())
+  orderId    String
+  order      Order  @relation(fields: [orderId], references: [id])
+  type       String // full | partial
+  amountKobo Int
+  reason     String?
+  status     String @default("pending")
+}
+
+model Dispute {
+  id          String   @id @default(cuid())
+  orderId     String
+  order       Order    @relation(fields: [orderId], references: [id])
+  reason      String
+  evidenceUrls Json?
+  status      String   @default("open")
+  resolution  String?
+  resolverId  String?
+}
+
+model Conversation {
+  id        String    @id @default(cuid())
+  buyerId   String
+  sellerId  String
+  orderId   String?
+  messages  Message[]
+  createdAt DateTime  @default(now())
+}
+
+model Message {
+  id             String       @id @default(cuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id])
+  senderId       String
+  body           String
+  attachments    Json?
+  createdAt      DateTime     @default(now())
+}
+
+model Review {
+  id          String  @id @default(cuid())
+  orderId     String
+  order       Order   @relation(fields: [orderId], references: [id])
+  authorId    String
+  author      User    @relation(fields: [authorId], references: [id])
+  rating      Int
+  dimensions  Json?
+  photos      Json?
+  verifiedPurchase Boolean @default(false)
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  type      String
+  payload   Json?
+  channels  Json?
+  readAt    DateTime?
+  createdAt DateTime @default(now())
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  actorId   String?
+  action    String
+  entity    String
+  diff      Json?
+  ip        String?
+  createdAt DateTime @default(now())
+}
