@@ -57,6 +57,39 @@ async function initSchema(d) {
       slug TEXT UNIQUE NOT NULL,
       sort_order INT NOT NULL DEFAULT 0
     );
+    CREATE TABLE IF NOT EXISTS products (
+      id TEXT PRIMARY KEY,
+      seller_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      category_id TEXT REFERENCES categories(id) ON DELETE SET NULL,
+      price_kobo INT NOT NULL DEFAULT 0,
+      stock INT NOT NULL DEFAULT 0,
+      condition TEXT NOT NULL DEFAULT 'new',
+      location TEXT,
+      delivery_methods JSONB,
+      variations JSONB,
+      media JSONB,
+      sku TEXT,
+      status TEXT NOT NULL DEFAULT 'draft',
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS services (
+      id TEXT PRIMARY KEY,
+      provider_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      category_id TEXT REFERENCES categories(id) ON DELETE SET NULL,
+      price_kobo INT NOT NULL DEFAULT 0,
+      location TEXT,
+      is_online BOOLEAN NOT NULL DEFAULT FALSE,
+      availability JSONB,
+      packages JSONB,
+      portfolio JSONB,
+      media JSONB,
+      status TEXT NOT NULL DEFAULT 'draft',
+      created_at TEXT NOT NULL
+    );
   `);
 }
 

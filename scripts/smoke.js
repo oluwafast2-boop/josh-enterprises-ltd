@@ -2,9 +2,9 @@
 const cases = [
   ['http://localhost:3000/health', 200, (b) => b.ok === true && b.service === 'web'],
   ['http://localhost:4000/health', 200, (b) => b.ok === true && b.service === 'api'],
-  ['http://localhost:4000/api/status', 200, (b) => b.ok === true && b.routes === 15],
+  ['http://localhost:4000/api/status', 200, (b) => b.ok === true && b.routes === 11],
   // (auth covered by Slice 1 POST flow below; GET on auth paths is 404 by design)
-  ['http://localhost:4000/api/products', 501, (b) => b.error === 'not-implemented' && b.slice === 3],
+  ['http://localhost:4000/api/products', 200, (b) => b.ok === true && Array.isArray(b.products)],
   ['http://localhost:4000/api/orders', 501, (b) => b.error === 'not-implemented' && b.slice === 4],
   ['http://localhost:4000/api/nope', 404, (b) => b.error === 'not-found'],
 ];
@@ -173,6 +173,62 @@ const cases = [
   } else {
     console.log('SKIP slice2 admin block (set ADMIN_EMAIL/ADMIN_PASSWORD)');
   }
+
+  // ---- Slice 3: listings + search + uploads ----
+  const catTree = await api('/api/categories');
+  const catId = catTree.body.categories.length > 0 ? catTree.body.categories[0].id : null;
+  let prodId = null, svcId = null;
+  await t('slice3 product create draft 201', async () => {
+    const r = await api('/api/products', { method: 'POST', token: sellerToken, body: { title: `Smoke Phone ${stamp}`, price_kobo: 150000, category_id: catId, stock: 5 } });
+    if (r.status === 201) prodId = r.body.product.id;
+    return r.status === 201 && r.body.product.status === 'draft';
+  });
+  await t('slice3 product draft hidden public', async () => {
+    const g = await api(`/api/products/${prodId}`);
+    const l = await api('/api/products');
+    return g.status === 404 && !l.body.products.some((p) => p.id === prodId);
+  });
+  await t('slice3 product publish + detail', async () => {
+    const p = await api(`/api/products/${prodId}`, { method: 'PATCH', token: sellerToken, body: { status: 'published', variations: [{ color: 'black' }] } });
+    if (p.status !== 200) return false;
+    const g = await api(`/api/products/${prodId}`);
+    return g.status === 200 && g.body.seller && typeof g.body.seller.verificationLevel === 'number';
+  });
+  await t('slice3 product validation', async () => {
+    const noTitle = await api('/api/products', { method: 'POST', token: sellerToken, body: { price_kobo: 100 } });
+    const badPrice = await api('/api/products', { method: 'POST', token: sellerToken, body: { title: 'X', price_kobo: -5 } });
+    const badCat = await api('/api/products', { method: 'POST', token: sellerToken, body: { title: 'X', price_kobo: 100, category_id: 'nope' } });
+    return noTitle.status === 400 && badPrice.status === 400 && badCat.status === 400;
+  });
+  await t('slice3 service create+publish', async () => {
+    const r = await api('/api/services', { method: 'POST', token: sellerToken, body: { title: `Smoke Repair ${stamp}`, price_kobo: 50000, isOnline: false, location: 'Lagos', packages: [{ name: 'Basic' }] } });
+    if (r.status !== 201) return false;
+    svcId = r.body.service.id;
+    const p = await api(`/api/services/${svcId}`, { method: 'PATCH', token: sellerToken, body: { status: 'published' } });
+    return p.status === 200;
+  });
+  await t('slice3 search finds both', async () => {
+    const r = await api(`/api/search?q=Smoke&type=all`);
+    const kinds = r.body.items.map((i) => i.kind);
+    return r.status === 200 && r.body.engine === 'pg-ilike' && kinds.includes('product') && kinds.includes('service');
+  });
+  await t('slice3 search filters+sort', async () => {
+    const f = await api(`/api/search?type=product&min_kobo=100000&max_kobo=200000&sort=price_desc`);
+    const s = await api(`/api/search?type=service`);
+    return f.status === 200 && f.body.items.every((i) => i.kind === 'product') && s.body.items.every((i) => i.kind === 'service');
+  });
+  await t('slice3 uploads stub shape', async () => {
+    const unauth = await api('/api/uploads', { method: 'POST', body: { filename: 'a.jpg' } });
+    const authed = await api('/api/uploads', { method: 'POST', token: sellerToken, body: { filename: 'pic.jpg', kind: 'listing' } });
+    return unauth.status === 401 && authed.status === 200 && authed.body.mode === 'stub' && String(authed.body.key).startsWith('listing/');
+  });
+  await t('slice3 cross-owner forbidden', async () => {
+    const other = await api('/api/auth/register', { method: 'POST', body: { email: `other+${stamp}@test.local`, password: 'other-pass-1' } });
+    void other;
+    const login = await api('/api/auth/login', { method: 'POST', body: { email: `other+${stamp}@test.local`, password: 'other-pass-1' } });
+    const r = await api(`/api/products/${prodId}`, { method: 'PATCH', token: login.body.token, body: { title: 'Hijack' } });
+    return r.status === 403;
+  });
 
   // no cleanup: PGlite holds an exclusive lock on data/ while the API runs,
   // so a second embedded connection from smoke would block. Test emails are

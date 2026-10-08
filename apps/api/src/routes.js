@@ -2,18 +2,16 @@
 // All domain routes return 501 until their slice lands (Phase 5).
 // Smoke test asserts: known route -> 501 + contract; unknown -> 404.
 const ROUTES = [
-  // Slice 2: profiles/storefronts/categories — LIVE (see src/me.js, src/businesses.js, src/categories.js)
-  // Slice 3: listings + search
-  { path: '/api/products', slice: 3, contract: 'CRUD product listings (§8) + media via R2 presigned PUT' },
-  { path: '/api/services', slice: 3, contract: 'CRUD service listings (§9)' },
-  { path: '/api/search', slice: 3, contract: 'GET ?q&category&price&location&rating&sort (Meili, PG-FTS fallback)' },
+  // Slices 2-3 LIVE (me, businesses, categories, products, services, search, uploads)
+  // Slice 4: cart/checkout/pay/escrow/orders
+  // (products/services/search/uploads now live — Slice 3)
   // Slice 4: cart/checkout/pay/escrow/orders
   { path: '/api/cart', slice: 4, contract: 'buyer cart + fee preview' },
   { path: '/api/checkout', slice: 4, contract: '8-step checkout preview (§14)' },
   { path: '/api/orders', slice: 4, contract: 'CRUD orders + status machine (§18)' },
   { path: '/api/payments', slice: 4, contract: 'init + webhook (Paystack source of truth)' },
   { path: '/api/escrow', slice: 4, contract: 'hold/release/refund ledger (§17)' },
-  { path: '/api/uploads', slice: 3, contract: 'R2 presigned PUT for listings/KYC/evidence' },
+  // (uploads live — Slice 3)
   // Slice 5: messaging + notifications
   { path: '/api/conversations', slice: 5, contract: '1:1 text+image threads (+ WS live)' },
   { path: '/api/notifications', slice: 5, contract: 'in-app + email + push + SMS (§24)' },
