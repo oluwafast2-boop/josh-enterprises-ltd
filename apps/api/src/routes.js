@@ -2,10 +2,7 @@
 // All domain routes return 501 until their slice lands (Phase 5).
 // Smoke test asserts: known route -> 501 + contract; unknown -> 404.
 const ROUTES = [
-  // Slice 2: profiles/storefronts/categories
-  { path: '/api/me', slice: 2, contract: 'GET/PATCH current user + business profile' },
-  { path: '/api/businesses', slice: 2, contract: 'CRUD business storefronts + verify' },
-  { path: '/api/categories', slice: 2, contract: 'admin category tree CRUD' },
+  // Slice 2: profiles/storefronts/categories — LIVE (see src/me.js, src/businesses.js, src/categories.js)
   // Slice 3: listings + search
   { path: '/api/products', slice: 3, contract: 'CRUD product listings (§8) + media via R2 presigned PUT' },
   { path: '/api/services', slice: 3, contract: 'CRUD service listings (§9)' },

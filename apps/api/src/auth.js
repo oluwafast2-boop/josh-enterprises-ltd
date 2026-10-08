@@ -19,6 +19,7 @@ const publicUser = (u) => ({
   id: u.id, email: u.email, phone: u.phone || null, name: u.name || null,
   role: u.role, verificationLevel: u.verificationLevel,
   emailVerified: u.emailVerified, phoneVerified: u.phoneVerified,
+  location: u.location || null, bio: u.bio || null,
   createdAt: u.createdAt,
 });
 
@@ -181,6 +182,16 @@ async function handler(req, res) {
   return send(res, 404, { ok: false, error: 'not-found' });
 }
 
+async function requireUser(req) {
+  const token = bearer(req);
+  if (!token) return null;
+  const db = await getDb();
+  const s = await db.query('SELECT user_id FROM sessions WHERE token = $1', [token]);
+  if (s.rows.length === 0) return null;
+  const u = await db.query('SELECT * FROM users WHERE id = $1', [s.rows[0].user_id]);
+  return rowToUser(u.rows[0]);
+}
+
 module.exports = {
   mode: MODE,
   routes: [
@@ -194,4 +205,6 @@ module.exports = {
     'POST /api/auth/reset-password',
   ],
   handler,
+  requireUser,
+  publicUser,
 };
