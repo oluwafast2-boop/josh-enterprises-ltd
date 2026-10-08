@@ -1,14 +1,14 @@
-// Slice 1 auth — real logic, file-backed store (Postgres + Better Auth later).
-// Mode: 'file-store'. Contract: IMPLEMENTATION_PLAN.md Phase 5.1.
+// Slice 1 auth — real logic on Postgres (PGlite embedded; server PG later).
+// Mode: 'pglite'. Contract: IMPLEMENTATION_PLAN.md Phase 5.1.
 const crypto = require('crypto');
-const store = require('./store');
+const { getDb, rowToUser } = require('./db');
 
 const MODE = (() => {
   try {
     require.resolve('better-auth');
-    return process.env.BETTER_AUTH_SECRET ? 'real' : 'file-store';
+    return process.env.BETTER_AUTH_SECRET ? 'real' : 'pglite';
   } catch {
-    return 'file-store';
+    return 'pglite';
   }
 })();
 
@@ -35,22 +35,10 @@ function verifyPassword(password, stored) {
 const newId = () => crypto.randomUUID();
 const newToken = () => crypto.randomBytes(32).toString('hex');
 
-const users = () => store.read('users.json', []);
-const saveUsers = (list) => store.write('users.json', list);
-const sessions = () => store.read('sessions.json', {});
-const saveSessions = (s) => store.write('sessions.json', s);
-
 function bearer(req) {
   const h = req.headers.authorization || '';
   const m = h.match(/^Bearer (.+)$/);
   return m ? m[1] : null;
-}
-function sessionUser(req) {
-  const token = bearer(req);
-  if (!token) return null;
-  const s = sessions()[token];
-  if (!s) return null;
-  return users().find((u) => u.id === s.userId) || null;
 }
 
 function readBody(req) {
@@ -74,6 +62,20 @@ async function handler(req, res) {
   if (req.method === 'POST' || req.method === 'PATCH') {
     try { body = await readBody(req); } catch { return send(res, 400, { ok: false, error: 'bad-json' }); }
   }
+  const db = await getDb();
+
+  const findByLogin = async (id) => {
+    const r = await db.query('SELECT * FROM users WHERE email = $1 OR LOWER(phone) = $2 LIMIT 1', [id, id]);
+    return rowToUser(r.rows[0]);
+  };
+  const sessionUser = async () => {
+    const token = bearer(req);
+    if (!token) return null;
+    const s = await db.query('SELECT user_id FROM sessions WHERE token = $1', [token]);
+    if (s.rows.length === 0) return null;
+    const u = await db.query('SELECT * FROM users WHERE id = $1', [s.rows[0].user_id]);
+    return rowToUser(u.rows[0]);
+  };
 
   // POST /api/auth/register
   if (req.method === 'POST' && pathname === '/api/auth/register') {
@@ -84,31 +86,32 @@ async function handler(req, res) {
     if (!EMAIL_RE.test(email)) return send(res, 400, { ok: false, error: 'invalid-email' });
     if (phone && !PHONE_RE.test(phone)) return send(res, 400, { ok: false, error: 'invalid-phone' });
     if (password.length < 8) return send(res, 400, { ok: false, error: 'weak-password', hint: 'min 8 chars' });
-    const list = users();
-    if (list.some((u) => u.email === email)) return send(res, 409, { ok: false, error: 'email-taken' });
-    if (phone && list.some((u) => u.phone === phone)) return send(res, 409, { ok: false, error: 'phone-taken' });
-    const user = {
-      id: newId(), email, phone: phone || null, name, role: 'buyer',
-      verificationLevel: 0, emailVerified: false, phoneVerified: false,
-      passwordHash: hashPassword(password), createdAt: new Date().toISOString(),
-    };
-    list.push(user);
-    saveUsers(list);
+    const byEmail = await db.query('SELECT id FROM users WHERE email = $1', [email]);
+    if (byEmail.rows.length > 0) return send(res, 409, { ok: false, error: 'email-taken' });
+    if (phone) {
+      const byPhone = await db.query('SELECT id FROM users WHERE phone = $1', [phone]);
+      if (byPhone.rows.length > 0) return send(res, 409, { ok: false, error: 'phone-taken' });
+    }
+    const now = new Date().toISOString();
+    const id = newId();
+    await db.query(
+      `INSERT INTO users (id, email, phone, name, role, verification_level, email_verified, phone_verified, password_hash, created_at)
+       VALUES ($1,$2,$3,$4,'buyer',0,FALSE,FALSE,$5,$6)`,
+      [id, email, phone || null, name, hashPassword(password), now]
+    );
+    const user = { id, email, phone: phone || null, name, role: 'buyer', verificationLevel: 0, emailVerified: false, phoneVerified: false, createdAt: now };
     return send(res, 201, { ok: true, user: publicUser(user), next: 'verify email/phone' });
   }
 
   // POST /api/auth/login {email|phone, password}
   if (req.method === 'POST' && pathname === '/api/auth/login') {
     const id = String(body.email || body.phone || '').trim().toLowerCase();
-    const list = users();
-    const user = list.find((u) => u.email === id || (u.phone && u.phone.toLowerCase() === id));
+    const user = await findByLogin(id);
     if (!user || !verifyPassword(String(body.password || ''), user.passwordHash)) {
       return send(res, 401, { ok: false, error: 'bad-credentials' });
     }
     const token = newToken();
-    const s = sessions();
-    s[token] = { userId: user.id, createdAt: new Date().toISOString() };
-    saveSessions(s);
+    await db.query('INSERT INTO sessions (token, user_id, created_at) VALUES ($1,$2,$3)', [token, user.id, new Date().toISOString()]);
     return send(res, 200, { ok: true, token, user: publicUser(user) });
   }
 
@@ -116,45 +119,42 @@ async function handler(req, res) {
   if (req.method === 'POST' && pathname === '/api/auth/logout') {
     const token = bearer(req);
     if (!token) return send(res, 401, { ok: false, error: 'no-token' });
-    const s = sessions();
-    delete s[token];
-    saveSessions(s);
+    await db.query('DELETE FROM sessions WHERE token = $1', [token]);
     return send(res, 200, { ok: true });
   }
 
   // GET /api/auth/me
   if (req.method === 'GET' && pathname === '/api/auth/me') {
-    const user = sessionUser(req);
+    const user = await sessionUser();
     if (!user) return send(res, 401, { ok: false, error: 'unauthorized' });
     return send(res, 200, { ok: true, user: publicUser(user) });
   }
 
-  // POST /api/auth/verify-email {email, code?} — dev: returns code until SMS/email provider lands
-  // POST /api/auth/verify-phone {phone, code?}
+  // POST /api/auth/verify-email | verify-phone (dev: code returned until provider lands)
   if (req.method === 'POST' && (pathname === '/api/auth/verify-email' || pathname === '/api/auth/verify-phone')) {
     const isEmail = pathname.endsWith('verify-email');
     const identifier = String(isEmail ? body.email || '' : body.phone || '').trim().toLowerCase();
     if (!identifier) return send(res, 400, { ok: false, error: 'missing-identifier' });
-    const otps = store.read('otp.json', {});
     if (!body.code) {
       const code = String(crypto.randomInt(100000, 999999));
-      otps[identifier] = { code, expires: Date.now() + 10 * 60 * 1000 };
-      store.write('otp.json', otps);
+      await db.query(
+        'INSERT INTO otp (identifier, code, expires) VALUES ($1,$2,$3) ON CONFLICT (identifier) DO UPDATE SET code=$2, expires=$3',
+        [identifier, code, Date.now() + 10 * 60 * 1000]
+      );
       return send(res, 200, { ok: true, sent: true, devCode: code, hint: 'no SMS/email provider yet — code returned directly' });
     }
-    const rec = otps[identifier];
-    if (!rec || rec.expires < Date.now() || rec.code !== String(body.code)) {
+    const rec = await db.query('SELECT * FROM otp WHERE identifier = $1', [identifier]);
+    if (rec.rows.length === 0 || rec.rows[0].expires < Date.now() || rec.rows[0].code !== String(body.code)) {
       return send(res, 400, { ok: false, error: 'bad-code' });
     }
-    delete otps[identifier];
-    store.write('otp.json', otps);
-    const list = users();
-    const user = list.find((u) => (isEmail ? u.email === identifier : (u.phone || '').toLowerCase() === identifier));
-    if (user) {
-      if (isEmail) user.emailVerified = true; else user.phoneVerified = true;
-      user.verificationLevel = Math.max(user.verificationLevel, 1);
-      saveUsers(list);
-      return send(res, 200, { ok: true, user: publicUser(user) });
+    await db.query('DELETE FROM otp WHERE identifier = $1', [identifier]);
+    const col = isEmail ? 'email' : 'phone';
+    const u = await db.query(`SELECT * FROM users WHERE ${col} = $1`, [identifier]);
+    if (u.rows.length > 0) {
+      const flag = isEmail ? 'email_verified' : 'phone_verified';
+      await db.query(`UPDATE users SET ${flag} = TRUE, verification_level = GREATEST(verification_level, 1) WHERE id = $1`, [u.rows[0].id]);
+      const fresh = await db.query('SELECT * FROM users WHERE id = $1', [u.rows[0].id]);
+      return send(res, 200, { ok: true, user: publicUser(rowToUser(fresh.rows[0])) });
     }
     return send(res, 200, { ok: true });
   }
@@ -162,26 +162,19 @@ async function handler(req, res) {
   // POST /api/auth/forgot-password {email} -> devToken
   if (req.method === 'POST' && pathname === '/api/auth/forgot-password') {
     const email = String(body.email || '').trim().toLowerCase();
-    const resets = store.read('resets.json', {});
     const token = newToken();
-    resets[token] = { email, expires: Date.now() + 30 * 60 * 1000 };
-    store.write('resets.json', resets);
+    await db.query('INSERT INTO resets (token, email, expires) VALUES ($1,$2,$3)', [token, email, Date.now() + 30 * 60 * 1000]);
     return send(res, 200, { ok: true, devToken: token, hint: 'no email provider yet — token returned directly' });
   }
 
   // POST /api/auth/reset-password {token, password}
   if (req.method === 'POST' && pathname === '/api/auth/reset-password') {
-    const resets = store.read('resets.json', {});
-    const rec = resets[String(body.token || '')];
-    if (!rec || rec.expires < Date.now()) return send(res, 400, { ok: false, error: 'bad-token' });
+    const rec = await db.query('SELECT * FROM resets WHERE token = $1', [String(body.token || '')]);
+    if (rec.rows.length === 0 || rec.rows[0].expires < Date.now()) return send(res, 400, { ok: false, error: 'bad-token' });
     if (String(body.password || '').length < 8) return send(res, 400, { ok: false, error: 'weak-password' });
-    const list = users();
-    const user = list.find((u) => u.email === rec.email);
-    if (!user) return send(res, 404, { ok: false, error: 'no-user' });
-    user.passwordHash = hashPassword(String(body.password));
-    saveUsers(list);
-    delete resets[String(body.token)];
-    store.write('resets.json', resets);
+    const upd = await db.query('UPDATE users SET password_hash = $1 WHERE email = $2', [hashPassword(String(body.password)), rec.rows[0].email]);
+    if (upd.rowCount === 0) return send(res, 404, { ok: false, error: 'no-user' });
+    await db.query('DELETE FROM resets WHERE token = $1', [String(body.token)]);
     return send(res, 200, { ok: true });
   }
 
@@ -201,8 +194,4 @@ module.exports = {
     'POST /api/auth/reset-password',
   ],
   handler,
-  // test-only: remove a user by email (smoke cleanup)
-  __removeUser(email) {
-    saveUsers(users().filter((u) => u.email !== email));
-  },
 };

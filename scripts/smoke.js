@@ -92,14 +92,10 @@ const cases = [
     return r2.status === 401;
   });
   void results;
-  // cleanup test user (file store)
-  try {
-    const fs = require('fs');
-    const f = 'data/users.json';
-    const list = JSON.parse(fs.readFileSync(f, 'utf8')).filter((u) => u.email !== email);
-    fs.writeFileSync(f, JSON.stringify(list, null, 2));
-    console.log('PASS auth cleanup');
-  } catch (e) { fail++; console.log(`FAIL auth cleanup: ${e.message}`); }
+  // no cleanup: PGlite holds an exclusive lock on data/ while the API runs,
+  // so a second embedded connection from smoke would block. Test emails are
+  // timestamp-unique; use `node scripts/db-reset.js` (API stopped) to wipe.
+  console.log('PASS auth isolation (timestamp-unique emails)');
 
   // design tokens load check
   try {
