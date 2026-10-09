@@ -2,10 +2,9 @@
 const cases = [
   ['http://localhost:3000/health', 200, (b) => b.ok === true && b.service === 'web'],
   ['http://localhost:4000/health', 200, (b) => b.ok === true && b.service === 'api'],
-  ['http://localhost:4000/api/status', 200, (b) => b.ok === true && b.routes === 11],
+  ['http://localhost:4000/api/status', 200, (b) => b.ok === true && b.routes === 6],
   // (auth covered by Slice 1 POST flow below; GET on auth paths is 404 by design)
   ['http://localhost:4000/api/products', 200, (b) => b.ok === true && Array.isArray(b.products)],
-  ['http://localhost:4000/api/orders', 501, (b) => b.error === 'not-implemented' && b.slice === 4],
   ['http://localhost:4000/api/nope', 404, (b) => b.error === 'not-found'],
 ];
 
@@ -228,6 +227,105 @@ const cases = [
     const login = await api('/api/auth/login', { method: 'POST', body: { email: `other+${stamp}@test.local`, password: 'other-pass-1' } });
     const r = await api(`/api/products/${prodId}`, { method: 'PATCH', token: login.body.token, body: { title: 'Hijack' } });
     return r.status === 403;
+  });
+
+  // ---- Slice 4: cart, checkout, orders, escrow ----
+  // sellerToken owns prodId (published, price 150000, stock 5). Buyer = fresh user.
+  const buyerEmail = `buyer+${stamp}@test.local`;
+  let buyerToken = null;
+  await t('slice4 buyer setup', async () => {
+    await api('/api/auth/register', { method: 'POST', body: { email: buyerEmail, password: 'buyer-pass-1' } });
+    const l = await api('/api/auth/login', { method: 'POST', body: { email: buyerEmail, password: 'buyer-pass-1' } });
+    if (l.status === 200) buyerToken = l.body.token;
+    return !!buyerToken;
+  });
+  await t('slice4 cart validation', async () => {
+    const over = await api('/api/cart', { method: 'POST', token: buyerToken, body: { items: [{ product_id: prodId, qty: 999 }] } });
+    const bad = await api('/api/cart', { method: 'POST', token: buyerToken, body: { items: [{ product_id: 'nope', qty: 1 }] } });
+    return over.status === 400 && over.body.error === 'insufficient-stock' && bad.status === 400;
+  });
+  await t('slice4 cart add + preview math', async () => {
+    const c = await api('/api/cart', { method: 'POST', token: buyerToken, body: { items: [{ product_id: prodId, qty: 2 }] } });
+    if (c.status !== 200) return false;
+    const p = await api('/api/checkout/preview', { method: 'POST', token: buyerToken, body: {} });
+    // 2 x 150000 = 300000 subtotal, 5% fee = 15000, total 315000
+    return p.status === 200 && p.body.orderCount === 1 && p.body.grandTotalKobo === 315000;
+  });
+  let orderId = null;
+  await t('slice4 place order', async () => {
+    const r = await api('/api/checkout/place', { method: 'POST', token: buyerToken, body: {} });
+    if (r.status === 201 && r.body.orders.length === 1) orderId = r.body.orders[0].id;
+    return r.status === 201 && r.body.orders[0].status === 'pending' && r.body.orders[0].totalKobo === 315000;
+  });
+  await t('slice4 cannot buy own', async () => {
+    await api('/api/cart', { method: 'POST', token: sellerToken, body: { items: [{ product_id: prodId, qty: 1 }] } });
+    const r = await api('/api/checkout/place', { method: 'POST', token: sellerToken, body: {} });
+    await api('/api/cart', { method: 'DELETE', token: sellerToken });
+    return r.status === 400 && r.body.error === 'cannot-buy-own';
+  });
+  await t('slice4 pay holds escrow + stock', async () => {
+    const r = await api('/api/payments/simulate-pay', { method: 'POST', token: buyerToken, body: { order_id: orderId } });
+    if (r.status !== 200) return false;
+    const e = await api(`/api/escrow/${orderId}`, { token: buyerToken });
+    const g = await api(`/api/products/${prodId}`);
+    return r.body.order.status === 'paid' && e.body.escrow.state === 'held' && g.body.product.stock === 3;
+  });
+  await t('slice4 bad transition rejected', async () => {
+    const skip = await api(`/api/orders/${orderId}/status`, { method: 'PATCH', token: sellerToken, body: { status: 'delivered' } });
+    const back = await api(`/api/orders/${orderId}/status`, { method: 'PATCH', token: sellerToken, body: { status: 'pending' } });
+    const buyerTry = await api(`/api/orders/${orderId}/status`, { method: 'PATCH', token: buyerToken, body: { status: 'processing' } });
+    return skip.status === 400 && back.status === 400 && buyerTry.status === 403;
+  });
+  await t('slice4 seller fulfills forward', async () => {
+    // paid -> processing -> shipped -> out_for_delivery -> delivered (one step each)
+    for (const s of ['processing', 'shipped', 'out_for_delivery', 'delivered']) {
+      const r = await api(`/api/orders/${orderId}/status`, { method: 'PATCH', token: sellerToken, body: { status: s } });
+      if (r.status !== 200) return false;
+    }
+    return true;
+  });
+  await t('slice4 confirm releases escrow', async () => {
+    const r = await api(`/api/orders/${orderId}/confirm`, { method: 'POST', token: buyerToken, body: {} });
+    return r.status === 200 && r.body.order.status === 'completed' && r.body.escrow === 'released';
+  });
+  await t('slice4 cancel pending order', async () => {
+    await api('/api/cart', { method: 'POST', token: buyerToken, body: { items: [{ product_id: prodId, qty: 1 }] } });
+    const p = await api('/api/checkout/place', { method: 'POST', token: buyerToken, body: {} });
+    const id = p.body.orders[0].id;
+    const c = await api(`/api/orders/${id}/cancel`, { method: 'POST', token: buyerToken, body: {} });
+    return c.status === 200 && c.body.order.status === 'cancelled';
+  });
+  await t('slice4 cancel paid refunds + restores', async () => {
+    await api('/api/cart', { method: 'POST', token: buyerToken, body: { items: [{ product_id: prodId, qty: 1 }] } });
+    const p = await api('/api/checkout/place', { method: 'POST', token: buyerToken, body: {} });
+    const id = p.body.orders[0].id;
+    await api('/api/payments/simulate-pay', { method: 'POST', token: buyerToken, body: { order_id: id } });
+    const before = await api(`/api/products/${prodId}`);
+    const c = await api(`/api/orders/${id}/cancel`, { method: 'POST', token: buyerToken, body: {} });
+    const after = await api(`/api/products/${prodId}`);
+    const e = await api(`/api/escrow/${id}`, { token: buyerToken });
+    return c.status === 200 && e.body.escrow.state === 'refunded' && after.body.product.stock === before.body.product.stock + 1;
+  });
+  await t('slice4 service order flow', async () => {
+    const o = await api('/api/orders', { method: 'POST', token: buyerToken, body: { service_id: svcId } });
+    if (o.status !== 201 || o.body.order.type !== 'service') return false;
+    const id = o.body.order.id;
+    await api('/api/payments/simulate-pay', { method: 'POST', token: buyerToken, body: { order_id: id } });
+    for (const s of ['accepted', 'scheduled', 'in_progress', 'completed']) {
+      const r = await api(`/api/orders/${id}/status`, { method: 'PATCH', token: sellerToken, body: { status: s } });
+      if (r.status !== 200) return false;
+    }
+    const c = await api(`/api/orders/${id}/confirm`, { method: 'POST', token: buyerToken, body: {} });
+    return c.status === 200 && c.body.order.status === 'confirmed' && c.body.escrow === 'released';
+  });
+  await t('slice4 order visibility', async () => {
+    const buying = await api('/api/orders?role=buying', { token: buyerToken });
+    const sold = await api('/api/orders?role=sold', { token: sellerToken });
+    const stranger = await api(`/api/orders/${orderId}`, { token: sellerToken }); // seller sees own sold — ok
+    void stranger;
+    const otherLogin = await api('/api/auth/login', { method: 'POST', body: { email: `other+${stamp}@test.local`, password: 'other-pass-1' } });
+    const denied = await api(`/api/orders/${orderId}`, { token: otherLogin.body.token });
+    return buying.body.orders.length >= 3 && sold.body.orders.length >= 1 && denied.status === 403;
   });
 
   // no cleanup: PGlite holds an exclusive lock on data/ while the API runs,

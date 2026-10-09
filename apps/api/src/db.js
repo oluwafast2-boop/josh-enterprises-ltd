@@ -90,6 +90,42 @@ async function initSchema(d) {
       status TEXT NOT NULL DEFAULT 'draft',
       created_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS carts (
+      buyer_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      items JSONB NOT NULL DEFAULT '[]',
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS orders (
+      id TEXT PRIMARY KEY,
+      buyer_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      seller_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      type TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      subtotal_kobo INT NOT NULL DEFAULT 0,
+      delivery_kobo INT NOT NULL DEFAULT 0,
+      platform_kobo INT NOT NULL DEFAULT 0,
+      total_kobo INT NOT NULL DEFAULT 0,
+      items JSONB,
+      delivery_info JSONB,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS escrow_ledger (
+      id TEXT PRIMARY KEY,
+      order_id TEXT UNIQUE NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+      amount_kobo INT NOT NULL DEFAULT 0,
+      state TEXT NOT NULL DEFAULT 'none',
+      audit JSONB,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS payments (
+      id TEXT PRIMARY KEY,
+      order_id TEXT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+      provider TEXT NOT NULL DEFAULT 'manual',
+      reference TEXT UNIQUE NOT NULL,
+      amount_kobo INT NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'pending',
+      created_at TEXT NOT NULL
+    );
   `);
 }
 

@@ -9,6 +9,8 @@ const products = require('./src/products');
 const services = require('./src/services');
 const search = require('./src/search');
 const uploads = require('./src/uploads');
+const cart = require('./src/cart');
+const orders = require('./src/orders');
 const routes = require('./src/routes');
 const r2 = require('./src/storage/r2');
 const PORT = process.env.API_PORT || 4000;
@@ -19,7 +21,7 @@ http.createServer((req, res) => {
     res.end(JSON.stringify(obj));
   };
   if (req.url === '/health') return body({ ok: true, service: 'api', time: new Date().toISOString() });
-  if (req.url === '/api/status') return body({ ok: true, authMode: auth.mode || auth.MODE, storageMode: r2.MODE, routes: routes.ROUTES.length, version: '0.4.0' });
+  if (req.url === '/api/status') return body({ ok: true, authMode: auth.mode || auth.MODE, storageMode: r2.MODE, routes: routes.ROUTES.length, version: '0.5.0' });
   if (req.url.startsWith('/api/auth/')) return auth.handler(req, res);
   if (req.url === '/api/me' || req.url.startsWith('/api/me?')) return me.handler(req, res);
   if (req.url.startsWith('/api/businesses')) return businesses.handler(req, res);
@@ -28,6 +30,8 @@ http.createServer((req, res) => {
   if (req.url.startsWith('/api/services')) return services.handler(req, res);
   if (req.url.startsWith('/api/search')) return search.handler(req, res);
   if (req.url.startsWith('/api/uploads')) return uploads.handler(req, res);
+  if (req.url.startsWith('/api/cart')) return cart.handler(req, res);
+  if (req.url.startsWith('/api/checkout') || req.url.startsWith('/api/orders') || req.url.startsWith('/api/payments') || req.url.startsWith('/api/escrow')) return orders.handler(req, res);
   if (req.url.startsWith('/api/')) return routes.handler(req, res);
   return body({ ok: true, service: 'api', routes: ['/health', '/api/status'] });
 }).listen(PORT, () => console.log(`api live on http://localhost:${PORT}`));
