@@ -202,6 +202,18 @@ async function initSchema(d) {
       status TEXT NOT NULL DEFAULT 'open',
       created_at TEXT NOT NULL
     );
+    -- Better Auth credential store (migrated from inline password_hash)
+    ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL;
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS expires_at BIGINT;
+    CREATE TABLE IF NOT EXISTS account (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      provider TEXT NOT NULL DEFAULT 'credential',
+      provider_account_id TEXT NOT NULL DEFAULT '',
+      password TEXT,
+      created_at TEXT NOT NULL,
+      UNIQUE (provider, provider_account_id)
+    );
   `);
 }
 
@@ -231,13 +243,14 @@ async function seedAdminFromEnv(d) {
   const password = String(process.env.ADMIN_PASSWORD || '');
   if (!email || password.length < 8) return;
   const crypto = require('crypto');
-  const salt = crypto.randomBytes(16).toString('hex');
-  const hash = crypto.scryptSync(password, salt, 64).toString('hex');
+  const ba = require('./ba');
+  const id = crypto.randomUUID();
   await d.query(
     `INSERT INTO users (id, email, phone, name, role, verification_level, email_verified, phone_verified, password_hash, created_at)
-     VALUES ($1,$2,NULL,$3,'admin',1,TRUE,FALSE,$4,$5)`,
-    [crypto.randomUUID(), email, 'Admin', `scrypt:${salt}:${hash}`, new Date().toISOString()]
+     VALUES ($1,$2,NULL,$3,'admin',1,TRUE,FALSE,NULL,$4)`,
+    [id, email, 'Admin', new Date().toISOString()]
   );
+  await ba.createCredential(d, id, email, password);
 }
 
 async function importFileStore(d) {

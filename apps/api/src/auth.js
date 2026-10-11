@@ -1,16 +1,10 @@
-// Slice 1 auth — real logic on Postgres (PGlite embedded; server PG later).
-// Mode: 'pglite'. Contract: IMPLEMENTATION_PLAN.md Phase 5.1.
+// Slice 1 auth — credentials via Better Auth (better-auth/crypto + account
+// table), sessions with expiry. Contract unchanged: IMPLEMENTATION_PLAN.md Phase 5.1.
 const crypto = require('crypto');
 const { getDb, rowToUser } = require('./db');
+const ba = require('./ba');
 
-const MODE = (() => {
-  try {
-    require.resolve('better-auth');
-    return process.env.BETTER_AUTH_SECRET ? 'real' : 'pglite';
-  } catch {
-    return 'pglite';
-  }
-})();
+const MODE = 'better-auth';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 const PHONE_RE = /^\+?[0-9]{7,15}$/;
@@ -23,16 +17,6 @@ const publicUser = (u) => ({
   createdAt: u.createdAt,
 });
 
-function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
-  const hash = crypto.scryptSync(password, salt, 64).toString('hex');
-  return `scrypt:${salt}:${hash}`;
-}
-function verifyPassword(password, stored) {
-  const [algo, salt, hash] = String(stored).split(':');
-  if (algo !== 'scrypt' || !salt || !hash) return false;
-  const check = crypto.scryptSync(password, salt, 64).toString('hex');
-  return crypto.timingSafeEqual(Buffer.from(check, 'hex'), Buffer.from(hash, 'hex'));
-}
 const newId = () => crypto.randomUUID();
 const newToken = () => crypto.randomBytes(32).toString('hex');
 
@@ -69,14 +53,7 @@ async function handler(req, res) {
     const r = await db.query('SELECT * FROM users WHERE email = $1 OR LOWER(phone) = $2 LIMIT 1', [id, id]);
     return rowToUser(r.rows[0]);
   };
-  const sessionUser = async () => {
-    const token = bearer(req);
-    if (!token) return null;
-    const s = await db.query('SELECT user_id FROM sessions WHERE token = $1', [token]);
-    if (s.rows.length === 0) return null;
-    const u = await db.query('SELECT * FROM users WHERE id = $1', [s.rows[0].user_id]);
-    return rowToUser(u.rows[0]);
-  };
+  const sessionUser = async () => ba.getSessionUser(db, rowToUser, bearer(req));
 
   // POST /api/auth/register
   if (req.method === 'POST' && pathname === '/api/auth/register') {
@@ -97,9 +74,10 @@ async function handler(req, res) {
     const id = newId();
     await db.query(
       `INSERT INTO users (id, email, phone, name, role, verification_level, email_verified, phone_verified, password_hash, created_at)
-       VALUES ($1,$2,$3,$4,'buyer',0,FALSE,FALSE,$5,$6)`,
-      [id, email, phone || null, name, hashPassword(password), now]
+       VALUES ($1,$2,$3,$4,'buyer',0,FALSE,FALSE,NULL,$5)`,
+      [id, email, phone || null, name, now]
     );
+    await ba.createCredential(db, id, email, password);
     const user = { id, email, phone: phone || null, name, role: 'buyer', verificationLevel: 0, emailVerified: false, phoneVerified: false, createdAt: now };
     return send(res, 201, { ok: true, user: publicUser(user), next: 'verify email/phone' });
   }
@@ -108,11 +86,10 @@ async function handler(req, res) {
   if (req.method === 'POST' && pathname === '/api/auth/login') {
     const id = String(body.email || body.phone || '').trim().toLowerCase();
     const user = await findByLogin(id);
-    if (!user || user.suspended || !verifyPassword(String(body.password || ''), user.passwordHash)) {
+    if (!user || user.suspended || !(await ba.checkPassword(db, user, String(body.password || '')))) {
       return send(res, 401, { ok: false, error: 'bad-credentials' });
     }
-    const token = newToken();
-    await db.query('INSERT INTO sessions (token, user_id, created_at) VALUES ($1,$2,$3)', [token, user.id, new Date().toISOString()]);
+    const token = await ba.createSession(db, user.id);
     return send(res, 200, { ok: true, token, user: publicUser(user) });
   }
 
@@ -120,7 +97,7 @@ async function handler(req, res) {
   if (req.method === 'POST' && pathname === '/api/auth/logout') {
     const token = bearer(req);
     if (!token) return send(res, 401, { ok: false, error: 'no-token' });
-    await db.query('DELETE FROM sessions WHERE token = $1', [token]);
+    await ba.deleteSession(db, token);
     return send(res, 200, { ok: true });
   }
 
@@ -193,8 +170,9 @@ async function handler(req, res) {
     const rec = await db.query('SELECT * FROM resets WHERE token = $1', [String(body.token || '')]);
     if (rec.rows.length === 0 || rec.rows[0].expires < Date.now()) return send(res, 400, { ok: false, error: 'bad-token' });
     if (String(body.password || '').length < 8) return send(res, 400, { ok: false, error: 'weak-password' });
-    const upd = await db.query('UPDATE users SET password_hash = $1 WHERE email = $2', [hashPassword(String(body.password)), rec.rows[0].email]);
-    if (upd.rowCount === 0) return send(res, 404, { ok: false, error: 'no-user' });
+    const target = await db.query('SELECT * FROM users WHERE email = $1', [rec.rows[0].email]);
+    if (target.rows.length === 0) return send(res, 404, { ok: false, error: 'no-user' });
+    await ba.setPassword(db, rowToUser(target.rows[0]), String(body.password));
     await db.query('DELETE FROM resets WHERE token = $1', [String(body.token)]);
     return send(res, 200, { ok: true });
   }
@@ -203,14 +181,8 @@ async function handler(req, res) {
 }
 
 async function requireUser(req) {
-  const token = bearer(req);
-  if (!token) return null;
   const db = await getDb();
-  const s = await db.query('SELECT user_id FROM sessions WHERE token = $1', [token]);
-  if (s.rows.length === 0) return null;
-  const u = await db.query('SELECT * FROM users WHERE id = $1', [s.rows[0].user_id]);
-  const user = rowToUser(u.rows[0]);
-  // suspended users are locked out everywhere (401 at every gate)
+  const user = await ba.getSessionUser(db, rowToUser, bearer(req));
   if (!user || user.suspended) return null;
   return user;
 }

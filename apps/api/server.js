@@ -59,7 +59,7 @@ http.createServer((req, res) => {
     res.end(JSON.stringify(obj));
   };
   if (req.url === '/health') return body({ ok: true, service: 'api', time: new Date().toISOString() });
-  if (req.url === '/api/status') return body({ ok: true, authMode: auth.mode || auth.MODE, storageMode: r2.MODE, routes: routes.ROUTES.length, version: '0.8.0', paystack: require('./src/paystack').enabled() });
+  if (req.url === '/api/status') return body({ ok: true, authMode: auth.mode || auth.MODE, storageMode: r2.MODE, routes: routes.ROUTES.length, version: '0.9.0', paystack: require('./src/paystack').enabled() });
   if (req.url.startsWith('/api/auth/')) return auth.handler(req, res);
   if (req.url === '/api/me' || req.url.startsWith('/api/me?')) return me.handler(req, res);
   if (req.url.startsWith('/api/businesses')) return businesses.handler(req, res);

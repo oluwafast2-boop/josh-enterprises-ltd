@@ -468,8 +468,18 @@ const cases = [
     const denied = await api('/api/admin/overview', { token: buyerToken });
     return o.status === 200 && o.body.overview.orders >= 5 && o.body.overview.gtvKobo > 0 && u.body.users.length >= 1 && denied.status === 403;
   });
-  await t('slice6 suspend locks out + restore', async () => {
-    const u = await api('/api/admin/users?q=other%2B', { token: adminToken });
+  await t('better-auth legacy migration', async () => {
+    // pre-migration seed accounts (raw scrypt hashes) must log in, then work migrated.
+    const found = await api('/api/admin/users?q=demo.local', { token: adminToken });
+    if (found.body.users.length === 0) { console.log('  SKIP legacy (no seed users)'); return true; }
+    const seller = found.body.users.find((u) => u.role !== 'admin');
+    const l1 = await api('/api/auth/login', { method: 'POST', body: { email: seller.email, password: 'demo-pass-1' } });
+    if (l1.status !== 200) return false;
+    const me = await api('/api/me', { token: l1.body.token });
+    const l2 = await api('/api/auth/login', { method: 'POST', body: { email: seller.email, password: 'demo-pass-1' } });
+    return me.status === 200 && l2.status === 200;
+  });
+  await t('slice6 suspend locks out + restore', async () => {    const u = await api('/api/admin/users?q=other%2B', { token: adminToken });
     const target = u.body.users[0].id;
     const s = await api(`/api/admin/users/${target}/suspend`, { method: 'POST', token: adminToken, body: {} });
     const login = await api('/api/auth/login', { method: 'POST', body: { email: `other+${stamp}@test.local`, password: 'other-pass-1' } });
