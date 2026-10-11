@@ -518,6 +518,46 @@ const cases = [
       && apiRes.headers.get('x-content-type-options') === 'nosniff';
   });
 
+  // ---- Paystack live path (test mode; no charge) ----
+  // NOTE: Paystack validates customer email strictly, so this test uses a
+  // gmail-formatted address (init sends no email until a real payment lands).
+  await t('paystack init + webhook settle', async () => {
+    const fs = require('fs');
+    const raw = (fs.readFileSync('.env', 'utf8').match(/^PAYSTACK_SECRET_KEY=(.*)$/m) || [])[1] || '';
+    const m = raw.trim();
+    if (!m) { console.log('  SKIP paystack (no key)'); return true; }
+    const crypto = require('crypto');
+    const psEmail = `paystack+${stamp}@gmail.com`;
+    await api('/api/auth/register', { method: 'POST', body: { email: psEmail, password: 'paystack-pass-1' } });
+    const psLogin = await api('/api/auth/login', { method: 'POST', body: { email: psEmail, password: 'paystack-pass-1' } });
+    const psToken = psLogin.body.token;
+    await api('/api/cart', { method: 'POST', token: psToken, body: { items: [{ product_id: prodId, qty: 1 }] } });
+    const p = await api('/api/checkout/place', { method: 'POST', token: psToken, body: {} });
+    if (p.status !== 201) return false;
+    const id = p.body.orders[0].id;
+    const total = p.body.orders[0].totalKobo;
+    const init = await api('/api/payments/init', { method: 'POST', token: psToken, body: { order_id: id } });
+    if (init.status !== 200 || !init.body.authorizationUrl || !init.body.reference) return false;
+    // forged payload must fail
+    const badHook = await fetch('http://localhost:4000/api/payments/webhook', {
+      method: 'POST', headers: { connection: 'close', 'content-type': 'application/json', 'x-paystack-signature': 'bad' },
+      body: JSON.stringify({ event: 'charge.success', data: { reference: init.body.reference, amount: total } }),
+    });
+    if (badHook.status !== 401) return false;
+    // genuine HMAC over exact raw body
+    const payload = JSON.stringify({ event: 'charge.success', data: { reference: init.body.reference, amount: total } });
+    const sig = crypto.createHmac('sha512', m.trim()).update(payload).digest('hex');
+    const hook = await fetch('http://localhost:4000/api/payments/webhook', {
+      method: 'POST', headers: { connection: 'close', 'content-type': 'application/json', 'x-paystack-signature': sig }, body: payload,
+    });
+    const hj = await hook.json();
+    const g0 = await api(`/api/orders/${id}`, { token: psToken });
+    const e = await api(`/api/escrow/${id}`, { token: psToken });
+    await api(`/api/orders/${id}/cancel`, { method: 'POST', token: psToken, body: {} });
+    const g = await api(`/api/orders/${id}`, { token: psToken });
+    return hook.status === 200 && hj.settled === id && g0.body.order.status === 'paid' && g.body.order.status === 'cancelled' && e.body.escrow.state === 'held';
+  });
+
   // no cleanup: PGlite holds an exclusive lock on data/ while the API runs,
   // so a second embedded connection from smoke would block. Test emails are
   // timestamp-unique; use `node scripts/db-reset.js` (API stopped) to wipe.

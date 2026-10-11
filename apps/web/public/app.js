@@ -125,6 +125,12 @@ async function vCheckout() {
   document.getElementById('pay').onclick = async () => {
     const placed = await api('/api/checkout/place', { method: 'POST', body: {} });
     if (placed.status !== 201) { document.getElementById('msg').innerHTML = errBox(placed.data.error || 'Failed'); return; }
+    // Real Paystack where enabled (redirect to authorization URL, webhook settles).
+    const first = placed.data.orders[0];
+    if (placed.data.orders.length === 1) {
+      const init = await api('/api/payments/init', { method: 'POST', body: { order_id: first.id } });
+      if (init.status === 200 && init.body.authorizationUrl) { window.location = init.body.authorizationUrl; return; }
+    }
     for (const o of placed.data.orders) {
       await api('/api/payments/simulate-pay', { method: 'POST', body: { order_id: o.id } });
     }

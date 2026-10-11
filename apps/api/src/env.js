@@ -8,7 +8,7 @@ function load() {
   let raw = '';
   try { raw = fs.readFileSync(f, 'utf8'); } catch { return; }
   for (const line of raw.split('\n')) {
-    const t = line.trim();
+    const t = line.trim().replace(/\r$/, '');
     if (!t || t.startsWith('#')) continue;
     const i = t.indexOf('=');
     if (i < 0) continue;

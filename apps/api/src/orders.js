@@ -21,6 +21,29 @@ const pub = (r) => ({
 
 const fee = (subtotal) => Math.round((subtotal * PLATFORM_FEE_BPS) / 10000);
 
+// Shared settlement: stock check/decrement, payment record, paid + escrow hold + notifications.
+// Throws on insufficient stock. Idempotent per reference (ON CONFLICT updates to paid).
+async function settlePaid(db, o, provider, reference) {
+  if (o.type === 'product') {
+    for (const line of o.items) {
+      const p = await db.query('SELECT stock FROM products WHERE id = $1', [line.product_id]);
+      if (p.rows.length === 0 || p.rows[0].stock < line.qty) throw new Error('insufficient-stock');
+    }
+    for (const line of o.items) {
+      await db.query('UPDATE products SET stock = stock - $1 WHERE id = $2', [line.qty, line.product_id]);
+    }
+  }
+  await db.query(
+    `INSERT INTO payments (id, order_id, provider, reference, amount_kobo, status, created_at) VALUES ($1,$2,$3,$4,$5,'paid',$6)
+     ON CONFLICT (reference) DO UPDATE SET status = 'paid'`,
+    [crypto.randomUUID(), o.id, provider, reference, o.total_kobo, new Date().toISOString()]
+  );
+  await db.query("UPDATE orders SET status = 'paid' WHERE id = $1 AND status = 'pending'", [o.id]);
+  await escrow.hold(db, o.id, o.total_kobo);
+  await notify.create(db, o.buyer_id, 'payment_confirmed', { order_id: o.id, total_kobo: o.total_kobo, reference });
+  await notify.create(db, o.seller_id, 'payment_received', { order_id: o.id, total_kobo: o.total_kobo });
+}
+
 async function visibleOrder(db, id, user) {
   const r = await db.query('SELECT * FROM orders WHERE id = $1', [id]);
   if (r.rows.length === 0) return { code: 404 };
@@ -33,13 +56,38 @@ async function visibleOrder(db, id, user) {
 async function handler(req, res) {
   const pathname = req.url.split('?')[0];
   const parts = pathname.split('/').filter(Boolean);
-  const user = await requireUser(req);
-  if (!user) return send(res, 401, { ok: false, error: 'unauthorized' });
+  const isWebhook = req.method === 'POST' && pathname === '/api/payments/webhook';
+  const user = isWebhook ? null : await requireUser(req);
+  if (!user && !isWebhook) return send(res, 401, { ok: false, error: 'unauthorized' });
   const db = await getDb();
   let body = {};
   if (req.method === 'POST' || req.method === 'PATCH') {
     try { body = await readBody(req); } catch { return send(res, 400, { ok: false, error: 'bad-json' }); }
   }
+  // Webhook is server-to-server (HMAC verified here) — no user session.
+  if (isWebhook) {
+    const paystack = require('./paystack');
+    if (!paystack.enabled()) return send(res, 501, { ok: false, error: 'paystack-disabled' });
+    if (!paystack.verifySignature(req._raw || '', req.headers['x-paystack-signature'])) {
+      return send(res, 401, { ok: false, error: 'bad-signature' });
+    }
+    if (body.event === 'charge.success') {
+      const ref = body.data && body.data.reference;
+      const paidKobo = body.data && body.data.amount;
+      const pay = await db.query('SELECT * FROM payments WHERE reference = $1', [ref]);
+      if (pay.rows.length === 0) return send(res, 200, { ok: true, ignored: 'unknown-reference' });
+      const o = (await db.query('SELECT * FROM orders WHERE id = $1', [pay.rows[0].order_id])).rows[0];
+      if (!o) return send(res, 200, { ok: true, ignored: 'unknown-order' });
+      if (paidKobo !== o.total_kobo) return send(res, 200, { ok: true, ignored: 'amount-mismatch' });
+      if (o.status === 'pending') {
+        try { await settlePaid(db, o, 'paystack', ref); }
+        catch (e) { return send(res, 200, { ok: true, ignored: String(e.message).slice(0, 80) }); }
+      }
+      return send(res, 200, { ok: true, settled: o.id });
+    }
+    return send(res, 200, { ok: true, ignored: body.event || 'unknown' });
+  }
+  // Webhook is server-to-server (HMAC verified here) — no user session.
 
   // POST /api/checkout/preview — cart math without writing orders
   if (req.method === 'POST' && pathname === '/api/checkout/preview') {
@@ -117,35 +165,47 @@ async function handler(req, res) {
     return send(res, 201, { ok: true, order: pub(r.rows[0]) });
   }
 
-  // POST /api/payments/simulate-pay {order_id} — dev stand-in for provider webhook
+  // POST /api/payments/simulate-pay {order_id} — dev stand-in (kept for tests)
   if (req.method === 'POST' && pathname === '/api/payments/simulate-pay') {
     const r = await db.query('SELECT * FROM orders WHERE id = $1', [body.order_id]);
     if (r.rows.length === 0) return send(res, 404, { ok: false, error: 'not-found' });
     const o = r.rows[0];
     if (o.buyer_id !== user.id && user.role !== 'admin') return send(res, 403, { ok: false, error: 'forbidden' });
     if (o.status !== 'pending') return send(res, 400, { ok: false, error: 'bad-status', status: o.status });
-    // stock check + decrement for products
-    if (o.type === 'product') {
-      for (const line of o.items) {
-        const p = await db.query('SELECT stock FROM products WHERE id = $1', [line.product_id]);
-        if (p.rows.length === 0 || p.rows[0].stock < line.qty) return send(res, 400, { ok: false, error: 'insufficient-stock' });
-      }
-      for (const line of o.items) {
-        await db.query('UPDATE products SET stock = stock - $1 WHERE id = $2', [line.qty, line.product_id]);
-      }
+    try {
+      const ref = `sim-${crypto.randomUUID()}`;
+      await settlePaid(db, o, 'manual', ref);
+      const fresh = await db.query('SELECT * FROM orders WHERE id = $1', [o.id]);
+      return send(res, 200, { ok: true, order: pub(fresh.rows[0]), escrow: 'held', reference: ref });
+    } catch (e) {
+      return send(res, 400, { ok: false, error: e.message });
     }
-    const ref = `sim-${crypto.randomUUID()}`;
-    await db.query(
-      "INSERT INTO payments (id, order_id, provider, reference, amount_kobo, status, created_at) VALUES ($1,$2,'manual',$3,$4,'paid',$5)",
-      [crypto.randomUUID(), o.id, ref, o.total_kobo, new Date().toISOString()]
-    );
-    await db.query("UPDATE orders SET status = 'paid' WHERE id = $1", [o.id]);
-    await escrow.hold(db, o.id, o.total_kobo);
-    await notify.create(db, o.buyer_id, 'payment_confirmed', { order_id: o.id, total_kobo: o.total_kobo, reference: ref });
-    await notify.create(db, o.seller_id, 'payment_received', { order_id: o.id, total_kobo: o.total_kobo });
-    const fresh = await db.query('SELECT * FROM orders WHERE id = $1', [o.id]);
-    return send(res, 200, { ok: true, order: pub(fresh.rows[0]), escrow: 'held', reference: ref });
   }
+
+  // POST /api/payments/init {order_id} — real Paystack transaction
+  if (req.method === 'POST' && pathname === '/api/payments/init') {
+    const paystack = require('./paystack');
+    if (!paystack.enabled()) return send(res, 501, { ok: false, error: 'paystack-disabled', hint: 'set PAYSTACK_SECRET_KEY' });
+    const r = await db.query('SELECT * FROM orders WHERE id = $1', [body.order_id]);
+    if (r.rows.length === 0) return send(res, 404, { ok: false, error: 'not-found' });
+    const o = r.rows[0];
+    if (o.buyer_id !== user.id && user.role !== 'admin') return send(res, 403, { ok: false, error: 'forbidden' });
+    if (o.status !== 'pending') return send(res, 400, { ok: false, error: 'bad-status', status: o.status });
+    const buyer = await db.query('SELECT email FROM users WHERE id = $1', [o.buyer_id]);
+    const ref = `josh-${o.id.slice(0, 8)}-${Date.now()}`;
+    try {
+      const init = await paystack.init(buyer.rows[0].email, o.total_kobo, ref, { order_id: o.id });
+      await db.query(
+        "INSERT INTO payments (id, order_id, provider, reference, amount_kobo, status, created_at) VALUES ($1,$2,'paystack',$3,$4,'initialized',$5) ON CONFLICT (reference) DO NOTHING",
+        [crypto.randomUUID(), o.id, ref, o.total_kobo, new Date().toISOString()]
+      );
+      return send(res, 200, { ok: true, authorizationUrl: init.authorization_url, reference: ref });
+    } catch (e) {
+      return send(res, 502, { ok: false, error: 'paystack-init-failed', hint: String(e.message).slice(0, 120) });
+    }
+  }
+
+  // POST /api/payments/webhook lives above (unauthenticated, HMAC verified).
 
   // GET /api/escrow/:order_id
   if (req.method === 'GET' && parts[1] === 'escrow' && parts.length === 3) {

@@ -10,6 +10,7 @@ function readBody(req) {
     let raw = '';
     req.on('data', (c) => { raw += c; if (raw.length > 1e6) req.destroy(); });
     req.on('end', () => {
+      req._raw = raw; // kept for webhook HMAC checks
       if (!raw) return resolve({});
       try { resolve(JSON.parse(raw)); } catch { reject(new Error('bad-json')); }
     });
