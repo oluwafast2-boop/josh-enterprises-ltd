@@ -16,16 +16,17 @@ http.createServer((req, res) => {
   if (p === '/') p = '/index.html';
   const file = path.join(ROOT, p);
   if (!file.startsWith(ROOT)) { res.writeHead(403); res.end(); return; }
+  const SEC = { 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'X-Frame-Options': 'SAMEORIGIN' };
   fs.readFile(file, (err, data) => {
     if (err) {
       fs.readFile(path.join(ROOT, 'index.html'), (e2, d2) => {
         if (e2) { res.writeHead(404); res.end('not found'); return; }
-        res.writeHead(200, { 'content-type': 'text/html' });
+        res.writeHead(200, { 'content-type': 'text/html', ...SEC });
         res.end(d2);
       });
       return;
     }
-    res.writeHead(200, { 'content-type': TYPES[path.extname(file)] || 'application/octet-stream' });
+    res.writeHead(200, { 'content-type': TYPES[path.extname(file)] || 'application/octet-stream', ...SEC });
     res.end(data);
   });
 }).listen(PORT, () => console.log(`web live on http://localhost:${PORT}`));

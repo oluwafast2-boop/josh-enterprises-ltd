@@ -217,6 +217,46 @@ async function vMessages(id) {
   };
 }
 
+async function vAdmin() {
+  const me = await refreshMe();
+  if (!me || me.role !== 'admin') { app.innerHTML = errBox('Admin only.'); return; }
+  const [ov, reports] = await Promise.all([
+    api('/api/disputes?all=1'), api('/api/admin/reports'),
+  ]);
+  const over = await api('/api/admin/overview');
+  const o = over.data.overview || {};
+  const naira = (k) => '₦' + (Number(k || 0) / 100).toLocaleString('en-NG');
+  app.innerHTML = `<h2>Admin</h2>
+    <div class="grid">
+      <div class="card"><h3>${o.users || 0}</h3><div class="muted">Users (${o.sellers || 0} sellers)</div></div>
+      <div class="card"><h3>${(o.publishedProducts || 0) + (o.publishedServices || 0)}</h3><div class="muted">Live listings</div></div>
+      <div class="card"><h3>${o.orders || 0}</h3><div class="muted">Orders (${o.completedOrders || 0} done)</div></div>
+      <div class="card"><h3>${naira(o.gtvKobo)}</h3><div class="muted">GTV · Revenue ${naira(o.revenueKobo)}</div></div>
+      <div class="card"><h3>${naira(o.escrowHeldKobo)}</h3><div class="muted">Escrow held</div></div>
+      <div class="card"><h3>${o.openDisputes || 0} / ${o.openReports || 0}</h3><div class="muted">Open disputes / reports</div></div>
+    </div>
+    <h3>Open disputes</h3><div id="dq">${(ov.data.disputes || []).map((d) => `
+      <div class="card"><div>${esc(d.id.slice(0, 8))} · ${esc(d.reason)} <span class="badge gray">${esc(d.status)}</span></div>
+      <div class="row" style="margin-top:8px"><button data-rel="${d.id}">Release to seller</button><button data-ref="${d.id}" class="secondary">Refund buyer</button></div></div>`).join('') || '<p class="muted">None open.</p>'}</div>
+    <h3>Open reports</h3><div>${(reports.data.reports || []).map((r) => `
+      <div class="card"><div>${esc(r.target_type)} ${esc(r.target_id.slice(0, 8))} — ${esc(r.reason)}</div>
+      <div class="row" style="margin-top:8px"><button data-close="${r.id}" class="secondary">Close</button></div></div>`).join('') || '<p class="muted">None open.</p>'}</div>
+    <h3>Users</h3><form id="uq" class="row"><input name="q" placeholder="Search email…" style="flex:1"><button>Search</button></form><div id="ul"></div>`;
+  app.querySelectorAll('[data-rel]').forEach((b) => { b.onclick = async () => { await api(`/api/disputes/${b.dataset.rel}/resolve`, { method: 'POST', body: { decision: 'release' } }); vAdmin(); }; });
+  app.querySelectorAll('[data-ref]').forEach((b) => { b.onclick = async () => { await api(`/api/disputes/${b.dataset.ref}/resolve`, { method: 'POST', body: { decision: 'refund' } }); vAdmin(); }; });
+  app.querySelectorAll('[data-close]').forEach((b) => { b.onclick = async () => { await api(`/api/admin/reports/${b.dataset.close}/close`, { method: 'POST', body: {} }); vAdmin(); }; });
+  document.getElementById('uq').onsubmit = async (e) => {
+    e.preventDefault();
+    const q = new FormData(e.target).get('q');
+    const r = await api('/api/admin/users?q=' + encodeURIComponent(q));
+    document.getElementById('ul').innerHTML = `<table><tr><th>Email</th><th>Role</th><th>Status</th><th></th></tr>` + ((r.data.users || []).map((u) => `
+      <tr><td>${esc(u.email)}</td><td>${esc(u.role)}</td><td>${u.suspended ? 'suspended' : 'active'}</td>
+      <td>${u.suspended ? `<button data-rs="${u.id}" class="secondary">Restore</button>` : `<button data-sp="${u.id}" class="warn">Suspend</button>`}</td></tr>`).join('')) + `</table>`;
+    document.querySelectorAll('[data-sp]').forEach((b) => { b.onclick = async () => { await api(`/api/admin/users/${b.dataset.sp}/suspend`, { method: 'POST', body: {} }); vAdmin(); }; });
+    document.querySelectorAll('[data-rs]').forEach((b) => { b.onclick = async () => { await api(`/api/admin/users/${b.dataset.rs}/restore`, { method: 'POST', body: {} }); vAdmin(); }; });
+  };
+}
+
 async function vMe() {
   const me = await refreshMe();
   if (!me) { location.hash = '#/auth'; return; }
@@ -253,6 +293,7 @@ async function route() {
     if (h.startsWith('#/orders/') && h.endsWith('/review')) return vReview(h.split('/')[2]);
     if (h.startsWith('#/orders/')) return vOrderDetail(h.slice(9));
     if (h === '#/sell') return vSell();
+    if (h === '#/admin') return vAdmin();
     if (h === '#/messages') return vMessages(null);
     if (h.startsWith('#/messages/')) return vMessages(h.slice(11));
     if (h === '#/me') return vMe();

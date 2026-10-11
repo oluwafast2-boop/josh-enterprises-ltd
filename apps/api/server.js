@@ -21,11 +21,38 @@ const routes = require('./src/routes');
 const r2 = require('./src/storage/r2');
 const PORT = process.env.API_PORT || 4000;
 
+const buckets = new Map();
+function checkRate(req, res, rules) {
+  const path = req.url.split('?')[0];
+  const rule = rules.find((r) => path.startsWith(r.prefix));
+  if (!rule) return true;
+  const ip = req.socket.remoteAddress || '?';
+  const key = ip + ' ' + rule.prefix;
+  const now = Date.now();
+  const hits = (buckets.get(key) || []).filter((t) => now - t < rule.windowMs);
+  hits.push(now);
+  buckets.set(key, hits);
+  if (hits.length > rule.max) {
+    res.writeHead(429, { 'content-type': 'application/json', 'Retry-After': '60' });
+    res.end(JSON.stringify({ ok: false, error: 'rate-limited' }));
+    return false;
+  }
+  return true;
+}
+
 http.createServer((req, res) => {
   res.setHeader('Access-Control-Allow-Origin', 'http://localhost:3000');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
   if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
+  // In-memory rate limits per IP+route (single instance; Redis when multi-instance).
+  const LIMITS = [
+    { prefix: '/api/auth/', max: 60, windowMs: 60000 },
+    { prefix: '/api/', max: 600, windowMs: 60000 },
+  ];
+  const hit = checkRate(req, res, LIMITS);
+  if (!hit) return;
   const body = (obj, code = 200) => {
     res.writeHead(code, { 'content-type': 'application/json' });
     res.end(JSON.stringify(obj));

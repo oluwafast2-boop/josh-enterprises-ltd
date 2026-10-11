@@ -508,6 +508,15 @@ const cases = [
     const res = await fetch('http://localhost:4000/api/products', { method: 'OPTIONS', headers: { connection: 'close', Origin: 'http://localhost:3000' } });
     return res.status === 204 && (res.headers.get('access-control-allow-origin') || '').includes('localhost:3000');
   });
+  await t('security headers present', async () => {
+    const web = await fetch('http://localhost:3000/', { headers: { connection: 'close' } });
+    await web.text();
+    const apiRes = await fetch('http://localhost:4000/api/search?q=x', { headers: { connection: 'close' } });
+    await apiRes.text();
+    return web.headers.get('x-content-type-options') === 'nosniff'
+      && web.headers.get('x-frame-options') === 'SAMEORIGIN'
+      && apiRes.headers.get('x-content-type-options') === 'nosniff';
+  });
 
   // no cleanup: PGlite holds an exclusive lock on data/ while the API runs,
   // so a second embedded connection from smoke would block. Test emails are
