@@ -2,7 +2,7 @@
 const cases = [
   ['http://localhost:3000/health', 200, (b) => b.ok === true && b.service === 'web'],
   ['http://localhost:4000/health', 200, (b) => b.ok === true && b.service === 'api'],
-  ['http://localhost:4000/api/status', 200, (b) => b.ok === true && b.routes === 4],
+  ['http://localhost:4000/api/status', 200, (b) => b.ok === true && b.routes === 0],
   // (auth covered by Slice 1 POST flow below; GET on auth paths is 404 by design)
   ['http://localhost:4000/api/products', 200, (b) => b.ok === true && Array.isArray(b.products)],
   ['http://localhost:4000/api/nope', 404, (b) => b.error === 'not-found'],
@@ -377,6 +377,119 @@ const cases = [
     await api(`/api/conversations/${convId}/messages`, { method: 'POST', token: buyerToken, body: { body: 'Ping for notify' } });
     const after = await api('/api/notifications?unread=1', { token: sellerToken });
     return after.body.unread === before.body.unread + 1 && after.body.notifications.some((n) => n.type === 'new_message');
+  });
+
+  // ---- Slice 6: reviews, refunds, disputes, admin ----
+  // orderId (slice 4) is completed product order by buyerToken from sellerToken.
+  let reviewId = null;
+  await t('slice6 review create 201', async () => {
+    const r = await api(`/api/orders/${orderId}/review`, { method: 'POST', token: buyerToken, body: { rating: 5, body: 'Great!' } });
+    if (r.status === 201) reviewId = r.body.review.id;
+    return r.status === 201 && r.body.review.verifiedPurchase === true;
+  });
+  await t('slice6 review guards', async () => {
+    const dupe = await api(`/api/orders/${orderId}/review`, { method: 'POST', token: buyerToken, body: { rating: 4 } });
+    const badRating = await api(`/api/orders/${orderId}/review`, { method: 'POST', token: buyerToken, body: { rating: 9 } });
+    await api('/api/cart', { method: 'POST', token: buyerToken, body: { items: [{ product_id: prodId, qty: 1 }] } });
+    const pending = await api('/api/checkout/place', { method: 'POST', token: buyerToken, body: {} });
+    const early = await api(`/api/orders/${pending.body.orders[0].id}/review`, { method: 'POST', token: buyerToken, body: { rating: 5 } });
+    await api(`/api/orders/${pending.body.orders[0].id}/cancel`, { method: 'POST', token: buyerToken, body: {} });
+    return dupe.status === 409 && badRating.status === 400 && early.status === 400;
+  });
+  await t('slice6 review list + respond + report', async () => {
+    const list = await api(`/api/reviews?listing=product:${prodId}`);
+    const resp = await api(`/api/reviews/${reviewId}/respond`, { method: 'POST', token: sellerToken, body: { response: 'Thanks!' } });
+    const rep = await api(`/api/reviews/${reviewId}/report`, { method: 'POST', token: buyerToken, body: { reason: 'test report' } });
+    return list.body.reviews.length >= 1 && resp.status === 200 && rep.status === 201;
+  });
+  await t('slice6 partial refund keeps order', async () => {
+    await api('/api/cart', { method: 'POST', token: buyerToken, body: { items: [{ product_id: prodId, qty: 1 }] } });
+    const p = await api('/api/checkout/place', { method: 'POST', token: buyerToken, body: {} });
+    const id = p.body.orders[0].id;
+    await api('/api/payments/simulate-pay', { method: 'POST', token: buyerToken, body: { order_id: id } });
+    const r = await api(`/api/orders/${id}/refund`, { method: 'POST', token: buyerToken, body: { type: 'partial', amount_kobo: 10000, reason: 'scratch' } });
+    const g = await api(`/api/orders/${id}`, { token: buyerToken });
+    const e = await api(`/api/escrow/${id}`, { token: buyerToken });
+    await api(`/api/orders/${id}/cancel`, { method: 'POST', token: buyerToken, body: {} });
+    return r.status === 200 && r.body.type === 'partial' && g.body.order.status !== 'cancelled' && e.body.escrow.state === 'held';
+  });
+  await t('slice6 full refund cancels + restores', async () => {
+    const before = (await api(`/api/products/${prodId}`)).body.product.stock;
+    await api('/api/cart', { method: 'POST', token: buyerToken, body: { items: [{ product_id: prodId, qty: 1 }] } });
+    const p = await api('/api/checkout/place', { method: 'POST', token: buyerToken, body: {} });
+    const id = p.body.orders[0].id;
+    await api('/api/payments/simulate-pay', { method: 'POST', token: buyerToken, body: { order_id: id } });
+    const r = await api(`/api/orders/${id}/refund`, { method: 'POST', token: buyerToken, body: { type: 'full', reason: 'changed mind' } });
+    const after = (await api(`/api/products/${prodId}`)).body.product.stock;
+    const e = await api(`/api/escrow/${id}`, { token: buyerToken });
+    return r.status === 200 && r.body.order.status === 'cancelled' && e.body.escrow.state === 'refunded' && after === before;
+  });
+  const adminLogin = await api('/api/auth/login', { method: 'POST', body: { email: process.env.ADMIN_EMAIL, password: process.env.ADMIN_PASSWORD } });
+  const adminToken = adminLogin.body.token;
+  let disputeId = null, disputeOrder = null;
+  await t('slice6 dispute freezes escrow', async () => {
+    await api('/api/cart', { method: 'POST', token: buyerToken, body: { items: [{ product_id: prodId, qty: 1 }] } });
+    const p = await api('/api/checkout/place', { method: 'POST', token: buyerToken, body: {} });
+    disputeOrder = p.body.orders[0].id;
+    await api('/api/payments/simulate-pay', { method: 'POST', token: buyerToken, body: { order_id: disputeOrder } });
+    for (const s of ['processing', 'shipped', 'out_for_delivery', 'delivered']) {
+      await api(`/api/orders/${disputeOrder}/status`, { method: 'PATCH', token: sellerToken, body: { status: s } });
+    }
+    const d = await api('/api/disputes', { method: 'POST', token: buyerToken, body: { order_id: disputeOrder, reason: 'box damaged', evidence: ['http://x/pic.jpg'] } });
+    if (d.status === 201) disputeId = d.body.dispute.id;
+    const e = await api(`/api/escrow/${disputeOrder}`, { token: buyerToken });
+    const c = await api(`/api/orders/${disputeOrder}/confirm`, { method: 'POST', token: buyerToken, body: {} });
+    return d.status === 201 && e.body.escrow.state === 'disputed' && c.status === 400 && c.body.error === 'dispute-open';
+  });
+  await t('slice6 dispute evidence + non-admin resolve 403', async () => {
+    const ev = await api(`/api/disputes/${disputeId}/evidence`, { method: 'POST', token: sellerToken, body: { urls: ['http://x/proof.jpg'] } });
+    const no = await api(`/api/disputes/${disputeId}/resolve`, { method: 'POST', token: sellerToken, body: { decision: 'release' } });
+    return ev.status === 200 && no.status === 403;
+  });
+  await t('slice6 admin resolve release', async () => {
+    const r = await api(`/api/disputes/${disputeId}/resolve`, { method: 'POST', token: adminToken, body: { decision: 'release' } });
+    const e = await api(`/api/escrow/${disputeOrder}`, { token: buyerToken });
+    return r.status === 200 && r.body.dispute.status === 'resolved' && e.body.escrow.state === 'released';
+  });
+  await t('slice6 admin resolve refund', async () => {
+    const before = (await api(`/api/products/${prodId}`)).body.product.stock;
+    await api('/api/cart', { method: 'POST', token: buyerToken, body: { items: [{ product_id: prodId, qty: 1 }] } });
+    const p = await api('/api/checkout/place', { method: 'POST', token: buyerToken, body: {} });
+    const id = p.body.orders[0].id;
+    await api('/api/payments/simulate-pay', { method: 'POST', token: buyerToken, body: { order_id: id } });
+    const d = await api('/api/disputes', { method: 'POST', token: buyerToken, body: { order_id: id, reason: 'never arrived' } });
+    const r = await api(`/api/disputes/${d.body.dispute.id}/resolve`, { method: 'POST', token: adminToken, body: { decision: 'refund' } });
+    const after = (await api(`/api/products/${prodId}`)).body.product.stock;
+    return r.status === 200 && after === before;
+  });
+  await t('slice6 admin overview + users', async () => {
+    const o = await api('/api/admin/overview', { token: adminToken });
+    const u = await api(`/api/admin/users?q=${encodeURIComponent('seller+')}`, { token: adminToken });
+    const denied = await api('/api/admin/overview', { token: buyerToken });
+    return o.status === 200 && o.body.overview.orders >= 5 && o.body.overview.gtvKobo > 0 && u.body.users.length >= 1 && denied.status === 403;
+  });
+  await t('slice6 suspend locks out + restore', async () => {
+    const u = await api('/api/admin/users?q=other%2B', { token: adminToken });
+    const target = u.body.users[0].id;
+    const s = await api(`/api/admin/users/${target}/suspend`, { method: 'POST', token: adminToken, body: {} });
+    const login = await api('/api/auth/login', { method: 'POST', body: { email: `other+${stamp}@test.local`, password: 'other-pass-1' } });
+    const r = await api(`/api/admin/users/${target}/restore`, { method: 'POST', token: adminToken, body: {} });
+    const login2 = await api('/api/auth/login', { method: 'POST', body: { email: `other+${stamp}@test.local`, password: 'other-pass-1' } });
+    return s.status === 200 && login.status === 401 && r.status === 200 && login2.status === 200;
+  });
+  await t('slice6 reports queue + close', async () => {
+    const made = await api('/api/reports', { method: 'POST', token: buyerToken, body: { target_type: 'listing', target_id: prodId, reason: 'test' } });
+    const q = await api('/api/admin/reports', { token: adminToken });
+    const c = await api(`/api/admin/reports/${made.body.report}/close`, { method: 'POST', token: adminToken, body: {} });
+    return made.status === 201 && q.body.reports.length >= 1 && c.status === 200;
+  });
+  await t('slice6 listing moderation', async () => {
+    const draft = await api('/api/products', { method: 'POST', token: sellerToken, body: { title: `Mod Me ${stamp}`, price_kobo: 1000 } });
+    const id = draft.body.product.id;
+    const rem = await api(`/api/admin/listings/product/${id}/remove`, { method: 'POST', token: adminToken, body: {} });
+    const app = await api(`/api/admin/listings/product/${id}/approve`, { method: 'POST', token: adminToken, body: {} });
+    const g = await api(`/api/products/${id}`);
+    return rem.status === 200 && app.status === 200 && g.status === 200;
   });
 
   // no cleanup: PGlite holds an exclusive lock on data/ while the API runs,

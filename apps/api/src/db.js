@@ -156,6 +156,52 @@ async function initSchema(d) {
       read_at TEXT,
       created_at TEXT NOT NULL
     );
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS suspended BOOLEAN NOT NULL DEFAULT FALSE;
+    CREATE TABLE IF NOT EXISTS reviews (
+      id TEXT PRIMARY KEY,
+      order_id TEXT UNIQUE NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+      author_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      target_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      listing_kind TEXT NOT NULL,
+      listing_id TEXT NOT NULL,
+      rating INT NOT NULL,
+      dimensions JSONB,
+      photos JSONB,
+      body TEXT,
+      response TEXT,
+      verified_purchase BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS refunds (
+      id TEXT PRIMARY KEY,
+      order_id TEXT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+      type TEXT NOT NULL,
+      amount_kobo INT NOT NULL DEFAULT 0,
+      reason TEXT,
+      status TEXT NOT NULL DEFAULT 'applied',
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS disputes (
+      id TEXT PRIMARY KEY,
+      order_id TEXT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+      raised_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      reason TEXT NOT NULL,
+      evidence JSONB,
+      status TEXT NOT NULL DEFAULT 'open',
+      resolution TEXT,
+      resolver_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TEXT NOT NULL,
+      resolved_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS reports (
+      id TEXT PRIMARY KEY,
+      reporter_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      target_type TEXT NOT NULL,
+      target_id TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'open',
+      created_at TEXT NOT NULL
+    );
   `);
 }
 
@@ -231,7 +277,7 @@ const rowToUser = (r) => r ? {
   id: r.id, email: r.email, phone: r.phone, name: r.name, role: r.role,
   verificationLevel: r.verification_level, emailVerified: r.email_verified,
   phoneVerified: r.phone_verified, passwordHash: r.password_hash, createdAt: r.created_at,
-  location: r.location || null, bio: r.bio || null,
+  location: r.location || null, bio: r.bio || null, suspended: !!r.suspended,
 } : null;
 
 module.exports = { getDb, rowToUser, MODE: 'pglite' };

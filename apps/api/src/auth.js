@@ -108,7 +108,7 @@ async function handler(req, res) {
   if (req.method === 'POST' && pathname === '/api/auth/login') {
     const id = String(body.email || body.phone || '').trim().toLowerCase();
     const user = await findByLogin(id);
-    if (!user || !verifyPassword(String(body.password || ''), user.passwordHash)) {
+    if (!user || user.suspended || !verifyPassword(String(body.password || ''), user.passwordHash)) {
       return send(res, 401, { ok: false, error: 'bad-credentials' });
     }
     const token = newToken();
@@ -189,7 +189,10 @@ async function requireUser(req) {
   const s = await db.query('SELECT user_id FROM sessions WHERE token = $1', [token]);
   if (s.rows.length === 0) return null;
   const u = await db.query('SELECT * FROM users WHERE id = $1', [s.rows[0].user_id]);
-  return rowToUser(u.rows[0]);
+  const user = rowToUser(u.rows[0]);
+  // suspended users are locked out everywhere (401 at every gate)
+  if (!user || user.suspended) return null;
+  return user;
 }
 
 module.exports = {

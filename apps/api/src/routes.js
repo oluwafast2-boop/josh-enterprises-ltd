@@ -2,14 +2,7 @@
 // All domain routes return 501 until their slice lands (Phase 5).
 // Smoke test asserts: known route -> 501 + contract; unknown -> 404.
 const ROUTES = [
-  // Slices 2-5 LIVE (me, businesses, categories, products, services, search, uploads, cart, checkout, orders, payments-sim, escrow, conversations, notifications)
-  // Slice 6: reviews + admin
-  // (conversations + notifications live — Slice 5)
-  // Slice 6: reviews + admin
-  { path: '/api/reviews', slice: 6, contract: 'verified-purchase reviews (§21)' },
-  { path: '/api/disputes', slice: 6, contract: 'hybrid dispute flow + evidence (§23)' },
-  { path: '/api/refunds', slice: 6, contract: 'full/partial refunds linked to payment (§22)' },
-  { path: '/api/admin', slice: 6, contract: 'RBAC admin queues (§28)' },
+  // All MVP slices LIVE — no stubs remain. New endpoints go straight to src/ modules.
 ];
 
 function match(url) {

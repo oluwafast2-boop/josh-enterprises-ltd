@@ -205,6 +205,8 @@ async function handler(req, res) {
     const ready = o.type === 'product' ? 'delivered' : 'completed';
     const done = o.type === 'product' ? 'completed' : 'confirmed';
     if (o.status !== ready) return send(res, 400, { ok: false, error: 'not-ready', status: o.status, need: ready });
+    const openDispute = await db.query("SELECT id FROM disputes WHERE order_id = $1 AND status = 'open' LIMIT 1", [o.id]);
+    if (openDispute.rows.length > 0) return send(res, 400, { ok: false, error: 'dispute-open' });
     await db.query('UPDATE orders SET status = $1 WHERE id = $2', [done, o.id]);
     const ledger = await escrow.release(db, o.id);
     await notify.create(db, o.seller_id, 'order_confirmed', { order_id: o.id, total_kobo: o.total_kobo });
