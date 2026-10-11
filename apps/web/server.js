@@ -1,18 +1,10 @@
-// Minimal local host for Josh Enterprises (no Docker yet).
-// Serves landing + health on PORT (default 3000).
+// Web host: static SPA (public/) + /health.
 const http = require('http');
+const fs = require('fs');
+const path = require('path');
 const PORT = process.env.WEB_PORT || 3000;
-
-const html = `<!doctype html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Josh Enterprises — Local</title>
-<style>body{font-family:system-ui;margin:0;background:#0f172a;color:#e2e8f0}main{max-width:720px;margin:10vh auto;padding:24px}.card{background:#1e293b;border-radius:12px;padding:24px}a{color:#38bdf8}</style>
-</head><body><main><div class="card">
-<h1>Josh Enterprises — locally hosted</h1>
-<p>Marketplace scaffold live. API: <a href="http://localhost:4000/health">:4000/health</a></p>
-<ul><li>Web health: <a href="/health">/health</a></li><li>Plan: <a href="https://github.com/oluwafast2-boop/josh-enterprises-ltd">GitHub</a></li></ul>
-<p>Next: full stack (local Postgres + Better Auth + R2) once Docker is installed.</p>
-</div></main></body></html>`;
+const ROOT = path.join(__dirname, 'public');
+const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg', '.svg': 'image/svg+xml' };
 
 http.createServer((req, res) => {
   if (req.url === '/health') {
@@ -20,6 +12,20 @@ http.createServer((req, res) => {
     res.end(JSON.stringify({ ok: true, service: 'web', time: new Date().toISOString() }));
     return;
   }
-  res.writeHead(200, { 'content-type': 'text/html' });
-  res.end(html);
+  let p = decodeURIComponent(req.url.split('?')[0]);
+  if (p === '/') p = '/index.html';
+  const file = path.join(ROOT, p);
+  if (!file.startsWith(ROOT)) { res.writeHead(403); res.end(); return; }
+  fs.readFile(file, (err, data) => {
+    if (err) {
+      fs.readFile(path.join(ROOT, 'index.html'), (e2, d2) => {
+        if (e2) { res.writeHead(404); res.end('not found'); return; }
+        res.writeHead(200, { 'content-type': 'text/html' });
+        res.end(d2);
+      });
+      return;
+    }
+    res.writeHead(200, { 'content-type': TYPES[path.extname(file)] || 'application/octet-stream' });
+    res.end(data);
+  });
 }).listen(PORT, () => console.log(`web live on http://localhost:${PORT}`));

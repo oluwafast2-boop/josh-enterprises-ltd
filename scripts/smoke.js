@@ -492,6 +492,23 @@ const cases = [
     return rem.status === 200 && app.status === 200 && g.status === 200;
   });
 
+  // ---- Web UI ----
+  await t('web index 200', async () => {
+    const res = await fetch('http://localhost:3000/', { headers: { connection: 'close' } });
+    const html = await res.text();
+    return res.status === 200 && html.includes('id="app"') && html.includes('/app.js');
+  });
+  await t('web assets 200', async () => {
+    const js = await fetch('http://localhost:3000/app.js', { headers: { connection: 'close' } });
+    const css = await fetch('http://localhost:3000/styles.css', { headers: { connection: 'close' } });
+    const tcss = await fetch('http://localhost:3000/tokens.css', { headers: { connection: 'close' } });
+    return js.status === 200 && css.status === 200 && tcss.status === 200;
+  });
+  await t('api CORS preflight 204', async () => {
+    const res = await fetch('http://localhost:4000/api/products', { method: 'OPTIONS', headers: { connection: 'close', Origin: 'http://localhost:3000' } });
+    return res.status === 204 && (res.headers.get('access-control-allow-origin') || '').includes('localhost:3000');
+  });
+
   // no cleanup: PGlite holds an exclusive lock on data/ while the API runs,
   // so a second embedded connection from smoke would block. Test emails are
   // timestamp-unique; use `node scripts/db-reset.js` (API stopped) to wipe.

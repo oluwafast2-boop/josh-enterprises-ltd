@@ -1,0 +1,18 @@
+:root {
+  --je-primary: #0e6b4f;
+  --je-primary-dark: #0a4f3b;
+  --je-accent: #f59e0b;
+  --je-success: #16a34a;
+  --je-warning: #d97706;
+  --je-danger: #dc2626;
+  --je-ink: #0f172a;
+  --je-muted: #64748b;
+  --je-surface: #ffffff;
+  --je-background: #f8fafc;
+  --je-font-display: "Sora", system-ui, sans-serif;
+  --je-font-body: "Inter", system-ui, sans-serif;
+  --je-radius-sm: 6px;
+  --je-radius-md: 10px;
+  --je-radius-lg: 14px;
+  --je-shadow-card: 0 1px 3px rgba(15, 23, 42, 0.12);
+}
