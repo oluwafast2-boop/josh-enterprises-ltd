@@ -1,5 +1,12 @@
-// Josh Enterprises SPA (v1: buyer loop + sell + inbox). API on :4000.
-const API = 'http://localhost:4000';
+// Josh Enterprises SPA (v1: buyer loop + sell + inbox).
+// API base: localStorage override (settings) > ?api= param > same-origin /api > localhost.
+const API = (() => {
+  const stored = localStorage.getItem('je_api');
+  if (stored) return stored.replace(/\/$/, '');
+  const q = new URLSearchParams(location.search).get('api');
+  if (q) return q.replace(/\/$/, '');
+  return 'http://localhost:4000';
+})();
 const app = document.getElementById('app');
 const getToken = () => localStorage.getItem('je_token');
 const setToken = (t) => t ? localStorage.setItem('je_token', t) : localStorage.removeItem('je_token');
@@ -273,12 +280,23 @@ async function vMe() {
     <form id="f" class="narrow"><input name="name" value="${esc(me.name || '')}" placeholder="Name">
     <input name="location" value="${esc(me.location || '')}" placeholder="Location">
     <textarea name="bio" placeholder="Bio">${esc(me.bio || '')}</textarea><button>Save</button></form>
+    <form id="api" class="narrow"><h3>API connection</h3>
+    <input name="api_url" value="${esc(localStorage.getItem('je_api') || '')}" placeholder="http://localhost:4000 (blank = default)">
+    <button class="secondary">Switch API & reload</button></form>
+    <p class="muted">Currently talking to: ${esc(API)}</p>
     <p><button id="out" class="secondary">Logout</button></p></div>`;
   document.getElementById('f').onsubmit = async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
     await api('/api/me', { method: 'PATCH', body: { name: fd.get('name'), location: fd.get('location'), bio: fd.get('bio') } });
     await refreshMe();
+  };
+  document.getElementById('api').onsubmit = async (e) => {
+    e.preventDefault();
+    const apiUrl = String(new FormData(e.target).get('api_url') || '').trim().replace(/\/$/, '');
+    if (apiUrl) localStorage.setItem('je_api', apiUrl);
+    else localStorage.removeItem('je_api');
+    location.reload();
   };
   document.getElementById('out').onclick = async () => { await api('/api/auth/logout', { method: 'POST', body: {} }); setToken(null); location.hash = '#/'; };
 }

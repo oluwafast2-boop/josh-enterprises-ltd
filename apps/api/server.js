@@ -42,7 +42,10 @@ function checkRate(req, res, rules) {
 }
 
 http.createServer((req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', 'http://localhost:3000');
+  const allowed = (process.env.ALLOWED_ORIGINS || 'http://localhost:3000').split(',').map((s) => s.trim()).filter(Boolean);
+  const origin = req.headers.origin || '';
+  res.setHeader('Access-Control-Allow-Origin', allowed.includes(origin) ? origin : allowed[0]);
+  res.setHeader('Vary', 'Origin');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   res.setHeader('X-Content-Type-Options', 'nosniff');

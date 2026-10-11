@@ -1,0 +1,15 @@
+# Netlify serves the static SPA in apps/web/public (no build step).
+[build]
+  publish = "apps/web/public"
+
+# SPA hash routes work from any path; API lives elsewhere (see ALLOWED_ORIGINS).
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "no-referrer"
