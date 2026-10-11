@@ -142,6 +142,16 @@ async function handler(req, res) {
         'INSERT INTO otp (identifier, code, expires) VALUES ($1,$2,$3) ON CONFLICT (identifier) DO UPDATE SET code=$2, expires=$3',
         [identifier, code, Date.now() + 10 * 60 * 1000]
       );
+      // Real SMS for phone verifications when live; dev code otherwise (never both).
+      if (!isEmail && process.env.TERMII_SEND === '1') {
+        const { sendSms } = require('./sms');
+        try {
+          await sendSms(identifier, `Your JOSHENT verification code is ${code}. It expires in 10 minutes. Do not share with anyone.`);
+          return send(res, 200, { ok: true, sent: true });
+        } catch (e) {
+          return send(res, 502, { ok: false, error: 'sms-failed', hint: 'check Termii credit/sender' });
+        }
+      }
       return send(res, 200, { ok: true, sent: true, devCode: code, hint: 'no SMS/email provider yet — code returned directly' });
     }
     const rec = await db.query('SELECT * FROM otp WHERE identifier = $1', [identifier]);
