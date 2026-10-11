@@ -126,6 +126,36 @@ async function initSchema(d) {
       status TEXT NOT NULL DEFAULT 'pending',
       created_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS conversations (
+      id TEXT PRIMARY KEY,
+      buyer_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      seller_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      order_id TEXT REFERENCES orders(id) ON DELETE SET NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS messages (
+      id TEXT PRIMARY KEY,
+      conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+      sender_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      body TEXT NOT NULL,
+      attachments JSONB,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS blocks (
+      blocker_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      blocked_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (blocker_id, blocked_id)
+    );
+    CREATE TABLE IF NOT EXISTS notifications (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      type TEXT NOT NULL,
+      payload JSONB,
+      channels JSONB,
+      read_at TEXT,
+      created_at TEXT NOT NULL
+    );
   `);
 }
 

@@ -5,6 +5,7 @@ const { getDb } = require('./db');
 const { send, readBody, requireUser } = require('./listings');
 const { getCart, saveCart } = require('./cart');
 const escrow = require('./escrow');
+const notify = require('./notify');
 
 const PLATFORM_FEE_BPS = 500;
 
@@ -86,6 +87,9 @@ async function handler(req, res) {
       }
       await saveCart(db, user.id, []);
       const rows = await db.query('SELECT * FROM orders WHERE id = ANY($1)', [created]);
+      for (const o of rows.rows) {
+        await notify.create(db, o.seller_id, 'order_placed', { order_id: o.id, total_kobo: o.total_kobo, buyer_id: user.id });
+      }
       return send(res, 201, { ok: true, orders: rows.rows.map(pub) });
     } catch (e) {
       return send(res, e.code || 400, { ok: false, error: e.message });
@@ -109,6 +113,7 @@ async function handler(req, res) {
        body.delivery_info || null, new Date().toISOString()]
     );
     const r = await db.query('SELECT * FROM orders WHERE id = $1', [id]);
+    await notify.create(db, svc.provider_id, 'order_placed', { order_id: id, total_kobo: svc.price_kobo + platform, buyer_id: user.id });
     return send(res, 201, { ok: true, order: pub(r.rows[0]) });
   }
 
@@ -136,6 +141,8 @@ async function handler(req, res) {
     );
     await db.query("UPDATE orders SET status = 'paid' WHERE id = $1", [o.id]);
     await escrow.hold(db, o.id, o.total_kobo);
+    await notify.create(db, o.buyer_id, 'payment_confirmed', { order_id: o.id, total_kobo: o.total_kobo, reference: ref });
+    await notify.create(db, o.seller_id, 'payment_received', { order_id: o.id, total_kobo: o.total_kobo });
     const fresh = await db.query('SELECT * FROM orders WHERE id = $1', [o.id]);
     return send(res, 200, { ok: true, order: pub(fresh.rows[0]), escrow: 'held', reference: ref });
   }
@@ -184,6 +191,7 @@ async function handler(req, res) {
       return send(res, 400, { ok: false, error: 'bad-transition', from: o.status });
     }
     await db.query('UPDATE orders SET status = $1 WHERE id = $2', [body.status, o.id]);
+    await notify.create(db, o.buyer_id, 'order_status', { order_id: o.id, status: body.status });
     const fresh = await db.query('SELECT * FROM orders WHERE id = $1', [o.id]);
     return send(res, 200, { ok: true, order: pub(fresh.rows[0]) });
   }
@@ -199,6 +207,7 @@ async function handler(req, res) {
     if (o.status !== ready) return send(res, 400, { ok: false, error: 'not-ready', status: o.status, need: ready });
     await db.query('UPDATE orders SET status = $1 WHERE id = $2', [done, o.id]);
     const ledger = await escrow.release(db, o.id);
+    await notify.create(db, o.seller_id, 'order_confirmed', { order_id: o.id, total_kobo: o.total_kobo });
     const fresh = await db.query('SELECT * FROM orders WHERE id = $1', [o.id]);
     return send(res, 200, { ok: true, order: pub(fresh.rows[0]), escrow: ledger.state });
   }
@@ -223,6 +232,8 @@ async function handler(req, res) {
       await escrow.refund(db, o.id);
     }
     await db.query("UPDATE orders SET status = 'cancelled' WHERE id = $1", [o.id]);
+    const otherParty = user.id === o.buyer_id ? o.seller_id : o.buyer_id;
+    await notify.create(db, otherParty, 'order_cancelled', { order_id: o.id, by: user.id });
     const fresh = await db.query('SELECT * FROM orders WHERE id = $1', [o.id]);
     return send(res, 200, { ok: true, order: pub(fresh.rows[0]) });
   }

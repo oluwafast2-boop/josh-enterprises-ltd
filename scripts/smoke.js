@@ -2,7 +2,7 @@
 const cases = [
   ['http://localhost:3000/health', 200, (b) => b.ok === true && b.service === 'web'],
   ['http://localhost:4000/health', 200, (b) => b.ok === true && b.service === 'api'],
-  ['http://localhost:4000/api/status', 200, (b) => b.ok === true && b.routes === 6],
+  ['http://localhost:4000/api/status', 200, (b) => b.ok === true && b.routes === 4],
   // (auth covered by Slice 1 POST flow below; GET on auth paths is 404 by design)
   ['http://localhost:4000/api/products', 200, (b) => b.ok === true && Array.isArray(b.products)],
   ['http://localhost:4000/api/nope', 404, (b) => b.error === 'not-found'],
@@ -326,6 +326,57 @@ const cases = [
     const otherLogin = await api('/api/auth/login', { method: 'POST', body: { email: `other+${stamp}@test.local`, password: 'other-pass-1' } });
     const denied = await api(`/api/orders/${orderId}`, { token: otherLogin.body.token });
     return buying.body.orders.length >= 3 && sold.body.orders.length >= 1 && denied.status === 403;
+  });
+
+  // ---- Slice 5: messaging + notifications ----
+  // buyerToken + sellerToken from earlier slices; seller's user id needed:
+  const sellerMe = await api('/api/me', { token: sellerToken });
+  const sellerId = sellerMe.body.user.id;
+  let convId = null;
+  await t('slice5 conversation create 201', async () => {
+    const r = await api('/api/conversations', { method: 'POST', token: buyerToken, body: { with_user_id: sellerId, order_id: orderId } });
+    if (r.status === 201 || (r.status === 200 && r.body.deduped)) convId = r.body.conversation.id;
+    return !!convId;
+  });
+  await t('slice5 conversation dedupe', async () => {
+    const r = await api('/api/conversations', { method: 'POST', token: sellerToken, body: { with_user_id: (await api('/api/me', { token: buyerToken })).body.user.id, order_id: orderId } });
+    return r.status === 200 && r.body.deduped === true && r.body.conversation.id === convId;
+  });
+  await t('slice5 message exchange', async () => {
+    const m1 = await api(`/api/conversations/${convId}/messages`, { method: 'POST', token: buyerToken, body: { body: 'Hello, is this available?' } });
+    const m2 = await api(`/api/conversations/${convId}/messages`, { method: 'POST', token: sellerToken, body: { body: 'Yes, ready to ship!' } });
+    if (m1.status !== 201 || m2.status !== 201) return false;
+    const list = await api(`/api/conversations/${convId}/messages`, { token: buyerToken });
+    return list.status === 200 && list.body.messages.length === 2 && list.body.messages[0].body.startsWith('Hello');
+  });
+  await t('slice5 outsider forbidden', async () => {
+    const otherLogin = await api('/api/auth/login', { method: 'POST', body: { email: `other+${stamp}@test.local`, password: 'other-pass-1' } });
+    const r = await api(`/api/conversations/${convId}/messages`, { token: otherLogin.body.token });
+    return r.status === 403;
+  });
+  await t('slice5 block prevents messages', async () => {
+    const b = await api(`/api/conversations/${convId}/block`, { method: 'POST', token: sellerToken, body: {} });
+    if (b.status !== 200) return false;
+    const blocked = await api(`/api/conversations/${convId}/messages`, { method: 'POST', token: buyerToken, body: { body: 'Can you hear me?' } });
+    const un = await api(`/api/conversations/${convId}/block`, { method: 'DELETE', token: sellerToken });
+    const after = await api(`/api/conversations/${convId}/messages`, { method: 'POST', token: buyerToken, body: { body: 'Back again' } });
+    return blocked.status === 403 && un.status === 200 && after.status === 201;
+  });
+  await t('slice5 notifications inbox', async () => {
+    const inbox = await api('/api/notifications', { token: sellerToken });
+    const types = inbox.body.notifications.map((n) => n.type);
+    const hasOrder = types.includes('order_placed') && types.includes('payment_received');
+    const unread = await api('/api/notifications?unread=1', { token: sellerToken });
+    const firstId = inbox.body.notifications[0].id;
+    const read = await api(`/api/notifications/${firstId}/read`, { method: 'PATCH', token: sellerToken, body: {} });
+    const unread2 = await api('/api/notifications?unread=1', { token: sellerToken });
+    return inbox.body.unread >= 2 && hasOrder && unread.body.unread === inbox.body.unread && read.status === 200 && unread2.body.unread === inbox.body.unread - 1;
+  });
+  await t('slice5 message notifies peer', async () => {
+    const before = await api('/api/notifications?unread=1', { token: sellerToken });
+    await api(`/api/conversations/${convId}/messages`, { method: 'POST', token: buyerToken, body: { body: 'Ping for notify' } });
+    const after = await api('/api/notifications?unread=1', { token: sellerToken });
+    return after.body.unread === before.body.unread + 1 && after.body.notifications.some((n) => n.type === 'new_message');
   });
 
   // no cleanup: PGlite holds an exclusive lock on data/ while the API runs,

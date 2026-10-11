@@ -2,10 +2,9 @@
 // All domain routes return 501 until their slice lands (Phase 5).
 // Smoke test asserts: known route -> 501 + contract; unknown -> 404.
 const ROUTES = [
-  // Slices 2-4 LIVE (me, businesses, categories, products, services, search, uploads, cart, checkout, orders, payments-sim, escrow)
-  // Slice 5: messaging + notifications
-  { path: '/api/conversations', slice: 5, contract: '1:1 text+image threads (+ WS live)' },
-  { path: '/api/notifications', slice: 5, contract: 'in-app + email + push + SMS (§24)' },
+  // Slices 2-5 LIVE (me, businesses, categories, products, services, search, uploads, cart, checkout, orders, payments-sim, escrow, conversations, notifications)
+  // Slice 6: reviews + admin
+  // (conversations + notifications live — Slice 5)
   // Slice 6: reviews + admin
   { path: '/api/reviews', slice: 6, contract: 'verified-purchase reviews (§21)' },
   { path: '/api/disputes', slice: 6, contract: 'hybrid dispute flow + evidence (§23)' },
