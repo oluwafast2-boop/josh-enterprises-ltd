@@ -1,4 +1,19 @@
 // Web host: static SPA (public/) + /health.
+// Tiny .env loader (mirrors apps/api/src/env.js; never overrides real env).
+try {
+  const fs0 = require('fs');
+  const path0 = require('path');
+  const raw0 = fs0.readFileSync(path0.join(__dirname, '..', '..', '.env'), 'utf8');
+  for (const line of raw0.split('\n')) {
+    const t = line.trim();
+    if (!t || t.startsWith('#')) continue;
+    const i = t.indexOf('=');
+    if (i < 0) continue;
+    const k = t.slice(0, i).trim();
+    const v = t.slice(i + 1).trim().replace(/^["']|["']$/g, '');
+    if (k && process.env[k] === undefined) process.env[k] = v;
+  }
+} catch { /* no .env — fine */ }
 const http = require('http');
 const fs = require('fs');
 const path = require('path');

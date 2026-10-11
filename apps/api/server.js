@@ -1,5 +1,6 @@
 // Minimal API for local hosting. Endpoints: /health, /api/status
 // + auth (Slice 1) + me/businesses/categories (Slice 2) + route contracts (501).
+require('./src/env').load();
 const http = require('http');
 const auth = require('./src/auth');
 const me = require('./src/me');
