@@ -142,7 +142,7 @@ async function handler(req, res) {
         'INSERT INTO otp (identifier, code, expires) VALUES ($1,$2,$3) ON CONFLICT (identifier) DO UPDATE SET code=$2, expires=$3',
         [identifier, code, Date.now() + 10 * 60 * 1000]
       );
-      // Real SMS for phone verifications when live; dev code otherwise (never both).
+      // Real SMS for phone verifications when live; real email for email verifications when live.
       if (!isEmail && process.env.TERMII_SEND === '1') {
         const { sendSms } = require('./sms');
         try {
@@ -150,6 +150,16 @@ async function handler(req, res) {
           return send(res, 200, { ok: true, sent: true });
         } catch (e) {
           return send(res, 502, { ok: false, error: 'sms-failed', hint: 'check Termii credit/sender' });
+        }
+      }
+      if (isEmail && process.env.RESEND_SEND === '1') {
+        const { sendMail } = require('./mail');
+        try {
+          await sendMail(identifier, 'Your Josh Enterprises verification code',
+            `<p>Your verification code is <b>${code}</b>. It expires in 10 minutes.</p><p>Do not share it with anyone.</p>`);
+          return send(res, 200, { ok: true, sent: true });
+        } catch (e) {
+          return send(res, 502, { ok: false, error: 'email-failed', hint: String(e.message).slice(0, 120) });
         }
       }
       return send(res, 200, { ok: true, sent: true, devCode: code, hint: 'no SMS/email provider yet — code returned directly' });
