@@ -512,7 +512,12 @@ const cases = [
     const js = await fetch('http://localhost:3000/app.js', { headers: { connection: 'close' } });
     const css = await fetch('http://localhost:3000/styles.css', { headers: { connection: 'close' } });
     const tcss = await fetch('http://localhost:3000/tokens.css', { headers: { connection: 'close' } });
-    return js.status === 200 && css.status === 200 && tcss.status === 200;
+    const mani = await fetch('http://localhost:3000/manifest.webmanifest', { headers: { connection: 'close' } });
+    const sw = await fetch('http://localhost:3000/sw.js', { headers: { connection: 'close' } });
+    const icon = await fetch('http://localhost:3000/icon-512.png', { headers: { connection: 'close' } });
+    const mj = await mani.json().catch(() => ({}));
+    return js.status === 200 && css.status === 200 && tcss.status === 200
+      && mani.status === 200 && (mj.icons || []).length >= 3 && sw.status === 200 && icon.status === 200;
   });
   await t('api CORS preflight 204', async () => {
     const res = await fetch('http://localhost:4000/api/products', { method: 'OPTIONS', headers: { connection: 'close', Origin: 'http://localhost:3000' } });
