@@ -186,27 +186,68 @@ async function vReview(orderId) {
   };
 }
 
-async function vSell() {
+async function vSell(edit) {
   const cats = await api('/api/categories');
   const opts = (cats.data.categories || []).map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
-  app.innerHTML = `<div class="card"><form class="narrow" id="f"><h2>Sell something</h2><div id="msg"></div>
-    <select name="kind"><option value="product">Product</option><option value="service">Service</option></select>
-    <input name="title" placeholder="Title" required>
-    <textarea name="description" placeholder="Description"></textarea>
-    <input name="price" type="number" min="0" placeholder="Price in naira" required>
+  let existing = null, kind = 'product';
+  if (edit) {
+    const r = await api(`/api/${edit.kind === 'product' ? 'products' : 'services'}/${edit.id}`);
+    if (r.status !== 200) { app.innerHTML = errBox('Listing not found.'); return; }
+    existing = r.data.product || r.data.service;
+    kind = edit.kind;
+  }
+  const val = (k) => existing ? esc(existing[k] == null ? '' : existing[k]) : '';
+  app.innerHTML = `<div class="card"><form class="narrow" id="f"><h2>${existing ? 'Edit listing' : 'Sell something'}</h2><div id="msg"></div>
+    <select name="kind" ${existing ? 'disabled' : ''}><option value="product"${kind === 'product' ? ' selected' : ''}>Product</option><option value="service"${kind === 'service' ? ' selected' : ''}>Service</option></select>
+    <input name="title" placeholder="Title" required value="${val('title')}">
+    <textarea name="description" placeholder="Description">${esc((existing && existing.description) || '')}</textarea>
+    <input name="price" type="number" min="0" placeholder="Price in naira" required value="${existing ? (existing.priceKobo / 100) : ''}">
     <select name="category_id"><option value="">Category…</option>${opts}</select>
-    <input name="stock" type="number" min="0" value="1">
-    <label><input type="checkbox" name="published" style="width:auto"> Publish immediately</label>
-    <button>Create listing</button></form></div>`;
+    <input name="stock" type="number" min="0" value="${existing && existing.stock != null ? existing.stock : 1}">
+    <label><input type="checkbox" name="published" style="width:auto"${existing && existing.status === 'published' ? ' checked' : ''}> Published</label>
+    <button>${existing ? 'Save changes' : 'Create listing'}</button></form></div>`;
+  if (existing && existing.categoryId) document.querySelector('[name=category_id]').value = existing.categoryId;
   document.getElementById('f').onsubmit = async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
-    const kind = fd.get('kind');
-    const r = await api(kind === 'product' ? '/api/products' : '/api/services', { method: 'POST',
-      body: { title: fd.get('title'), description: fd.get('description'), price_kobo: Math.round(Number(fd.get('price')) * 100),
-        category_id: fd.get('category_id') || undefined, stock: Number(fd.get('stock')), status: fd.get('published') ? 'published' : 'draft' } });
-    document.getElementById('msg').innerHTML = r.status === 201 ? `<div class="ok">Created! <a href="#/${kind === 'product' ? 'p' : 's'}/${r.body[kind].id}">View</a></div>` : errBox(r.data.error || 'Failed');
+    const payload = { title: fd.get('title'), description: fd.get('description'), price_kobo: Math.round(Number(fd.get('price')) * 100),
+      category_id: fd.get('category_id') || null, stock: Number(fd.get('stock')), status: fd.get('published') ? 'published' : 'draft' };
+    let r;
+    if (existing) r = await api(`/api/${kind === 'product' ? 'products' : 'services'}/${existing.id}`, { method: 'PATCH', body: payload });
+    else r = await api(fd.get('kind') === 'product' ? '/api/products' : '/api/services', { method: 'POST', body: payload });
+    const saved = r.body.product || r.body.service;
+    document.getElementById('msg').innerHTML = (r.status === 201 || r.status === 200) && saved
+      ? `<div class="ok">Saved! <a href="#/${saved.kind === 'service' ? 's' : 'p'}/${saved.id}">View</a> · <a href="#/listings">My listings</a></div>`
+      : errBox(r.data.error || 'Failed');
   };
+}
+
+async function vListings() {
+  const me = await refreshMe();
+  if (!me) { location.hash = '#/auth'; return; }
+  const [prods, svcs] = await Promise.all([api('/api/products?mine=1'), api('/api/services?mine=1')]);
+  const card = (it) => `<div class="card"><h3>${esc(it.title)}</h3>
+    <div class="muted">${esc(it.kind)} · ${it.status} · ${kobo(it.priceKobo)}${it.stock != null ? ' · stock ' + it.stock : ''}</div>
+    <div class="row" style="margin-top:8px">
+      <a class="btn secondary" href="#/sell/${it.kind}/${it.id}">Edit</a>
+      <button data-pub="${it.kind}:${it.id}" class="secondary">${it.status === 'published' ? 'Unpublish' : 'Publish'}</button>
+      <button data-del="${it.kind}:${it.id}" class="warn">Delete</button>
+    </div></div>`;
+  app.innerHTML = `<h2>My listings</h2><div class="row" style="margin-bottom:12px"><a class="btn" href="#/sell">+ New listing</a></div>
+    <div class="grid">${(prods.data.products || []).map((p) => card({ ...p, kind: 'product' })).join('')}${(svcs.data.services || []).map((s) => card({ ...s, kind: 'service' })).join('')}</div>`;
+  app.querySelectorAll('[data-pub]').forEach((b) => { b.onclick = async () => {
+    const [kind, id] = b.dataset.pub.split(':');
+    const base = kind === 'product' ? 'products' : 'services';
+    const cur = b.textContent.trim() === 'Unpublish' ? 'draft' : 'published';
+    await api(`/api/${base}/${id}`, { method: 'PATCH', body: { status: cur } });
+    vListings();
+  }; });
+  app.querySelectorAll('[data-del]').forEach((b) => { b.onclick = async () => {
+    if (!confirm('Delete this listing?')) return;
+    const [kind, id] = b.dataset.del.split(':');
+    await api(`/api/${kind === 'product' ? 'products' : 'services'}/${id}`, { method: 'DELETE' });
+    vListings();
+  }; });
 }
 
 async function vMessages(id) {
@@ -316,7 +357,9 @@ async function route() {
     if (h === '#/orders') return vOrders();
     if (h.startsWith('#/orders/') && h.endsWith('/review')) return vReview(h.split('/')[2]);
     if (h.startsWith('#/orders/')) return vOrderDetail(h.slice(9));
-    if (h === '#/sell') return vSell();
+    if (h === '#/sell') return vSell(null);
+    if (h.startsWith('#/sell/')) { const [, , kind, id] = h.split('/'); return vSell({ kind, id }); }
+    if (h === '#/listings') return vListings();
     if (h === '#/admin') return vAdmin();
     if (h === '#/messages') return vMessages(null);
     if (h.startsWith('#/messages/')) return vMessages(h.slice(11));
