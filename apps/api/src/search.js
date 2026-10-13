@@ -46,7 +46,7 @@ async function handler(req, res) {
     const where = filters(q, 'p', params);
     params.push(q.limit);
     const r = await db.query(
-      `SELECT 'product' AS kind, id, title, price_kobo, location, category_id, created_at FROM products p
+      `SELECT 'product' AS kind, id, seller_id, title, price_kobo, location, category_id, created_at FROM products p
        WHERE ${where.join(' AND ')} ORDER BY ${SORTS[q.sort]} LIMIT $${params.length}`, params);
     r.rows.forEach((row) => items.push(row));
   }
@@ -55,7 +55,7 @@ async function handler(req, res) {
     const where = filters(q, 's', params);
     params.push(q.limit);
     const r = await db.query(
-      `SELECT 'service' AS kind, id, title, price_kobo, location, category_id, created_at FROM services s
+      `SELECT 'service' AS kind, id, provider_id, title, price_kobo, location, category_id, created_at FROM services s
        WHERE ${where.join(' AND ')} ORDER BY ${SORTS[q.sort]} LIMIT $${params.length}`, params);
     r.rows.forEach((row) => items.push(row));
   }

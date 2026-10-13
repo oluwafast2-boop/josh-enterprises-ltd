@@ -13,6 +13,38 @@ const setToken = (t) => t ? localStorage.setItem('je_token', t) : localStorage.r
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const kobo = (k) => '₦' + (Number(k || 0) / 100).toLocaleString('en-NG', { minimumFractionDigits: 2 });
 
+function toast(msg) {
+  let t = document.getElementById('toast');
+  if (!t) { t = document.createElement('div'); t.id = 'toast'; document.body.appendChild(t); }
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(t._h);
+  t._h = setTimeout(() => t.classList.remove('show'), 2600);
+}
+// Deterministic colorful gradient per listing id.
+function gradient(id) {
+  const palettes = [
+    ['#0e6b4f', '#14957a'], ['#7c3aed', '#c026d3'], ['#ea580c', '#f59e0b'],
+    ['#0369a1', '#22d3ee'], ['#be123c', '#fb7185'], ['#4d7c0f', '#a3e635'],
+  ];
+  let h = 0;
+  for (const c of String(id)) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  const [g1, g2] = palettes[h % palettes.length];
+  return `style="--g1:${g1};--g2:${g2}"`;
+}
+function stars(r) {
+  r = Math.round(Number(r) || 0);
+  return `<span class="stars">${'★'.repeat(Math.min(5, Math.max(0, r)))}${'☆'.repeat(5 - Math.min(5, Math.max(0, r)))}</span>`;
+}
+function card(i) {
+  const letter = esc((i.title || '?').trim().charAt(0).toUpperCase() || '?');
+  return `<div class="card"><div class="thumb" ${gradient(i.id)}>${letter}</div>
+    <h3><a href="#/${i.kind === 'product' ? 'p' : 's'}/${i.id}">${esc(i.title)}</a></h3>
+    <div class="price">${kobo(i.price_kobo)}</div>
+    <div class="muted">${esc(i.kind)}${i.location ? ' · ' + esc(i.location) : ''}</div></div>`;
+}
+const loading = `<div class="grid"><div class="skel"></div><div class="skel"></div><div class="skel"></div></div>`;
+
 async function api(path, { method = 'GET', body = null } = {}) {
   const headers = { 'Content-Type': 'application/json' };
   const t = getToken();
@@ -34,31 +66,67 @@ async function refreshMe() {
 
 // ---------- views ----------
 async function vHome() {
-  const [cats, items] = await Promise.all([api('/api/categories'), api('/api/search?limit=12')]);
-  const list = (items.data.items || []).map((i) => `
-    <div class="card"><h3><a href="#/${i.kind === 'product' ? 'p' : 's'}/${i.id}">${esc(i.title)}</a></h3>
-    <div class="price">${kobo(i.price_kobo)}</div>
-    <div class="muted">${esc(i.kind)}${i.location ? ' · ' + esc(i.location) : ''}</div></div>`).join('');
-  app.innerHTML = `<h2>Marketplace</h2>
-    <nav class="tabs">${(cats.data.categories || []).map((c) => `<a class="btn secondary" href="#/c/${c.id}">${esc(c.name)}</a>`).join('')}</nav>
-    <div class="grid">${list || '<p class="muted">No listings yet — be the first to <a href="#/sell">sell</a>.</p>'}</div>`;
+  app.innerHTML = `<div class="hero"><h1>Everything, from people you can trust</h1>
+    <p>Buy products, hire services, pay securely with escrow protection.</p>
+    <a class="btn" href="#/sell">Start selling — it's free</a></div>
+    <div id="cats" class="chips"></div><div id="secs">${loading}</div>`;
+  const [cats, items] = await Promise.all([api('/api/categories'), api('/api/search?limit=24')]);
+  document.getElementById('cats').innerHTML =
+    `<a class="chip" href="#/">All</a>` + ((cats.data.categories || []).map((c) => `<a class="chip" href="#/c/${c.id}">${esc(c.name)}</a>`).join(''));
+  const all = items.data.items || [];
+  const prods = all.filter((i) => i.kind === 'product');
+  const svcs = all.filter((i) => i.kind === 'service');
+  const sec = (title, list, empty) => list.length === 0 ? '' : `<div class="section-title"><span class="dot"></span>${title}</div><div class="grid">${list.map(card).join('')}</div>`;
+  document.getElementById('secs').innerHTML =
+    sec('✨ New arrivals', all.slice(0, 8)) +
+    sec('🛍️ Products', prods.slice(0, 4)) +
+    sec('🛠️ Services', svcs.slice(0, 4)) +
+    (all.length === 0 ? `<div class="card"><p class="muted">No listings yet — be the first to <a href="#/sell">sell</a>.</p></div>` : '');
 }
 
-async function vSearch(q) {
-  const params = new URLSearchParams({ q, limit: 24 });
-  const { data } = await api('/api/search?' + params);
-  app.innerHTML = `<h2>Results for “${esc(q)}” (${data.count})</h2>
-    <div class="grid">${(data.items || []).map((i) => `
-      <div class="card"><h3><a href="#/${i.kind === 'product' ? 'p' : 's'}/${i.id}">${esc(i.title)}</a></h3>
-      <div class="price">${kobo(i.price_kobo)}</div><div class="muted">${esc(i.kind)}</div></div>`).join('')}</div>`;
+function filterBar(values) {
+  const v = values || {};
+  return `<form class="filters" id="ff">
+    <input name="q" placeholder="Keyword" value="${esc(v.q || '')}">
+    <input name="min" type="number" min="0" placeholder="Min ₦" value="${esc(v.min || '')}">
+    <input name="max" type="number" min="0" placeholder="Max ₦" value="${esc(v.max || '')}">
+    <input name="location" placeholder="Location" value="${esc(v.location || '')}">
+    <select name="sort"><option value="newest">Newest</option><option value="price_asc"${v.sort === 'price_asc' ? ' selected' : ''}>Price ↑</option><option value="price_desc"${v.sort === 'price_desc' ? ' selected' : ''}>Price ↓</option></select>
+    <button>Filter</button></form>`;
+}
+
+async function runSearch(params) {
+  const q = new URLSearchParams({ limit: 48 });
+  for (const [k, val] of Object.entries(params)) if (val) q.set(k === 'min' ? 'min_kobo' : k === 'max' ? 'max_kobo' : k, k === 'min' || k === 'max' ? Math.round(Number(val) * 100) : val);
+  const { data } = await api('/api/search?' + q);
+  return data;
+}
+
+async function vSearch(initial) {
+  const url = new URLSearchParams(location.search);
+  app.innerHTML = `<h2>Search & filters</h2>${filterBar({ q: initial || url.get('q') || '' })}<div id="res">${loading}</div>`;
+  const go = async (vals) => {
+    const data = await runSearch(vals);
+    document.getElementById('res').innerHTML = `<p class="muted">${data.count} result(s) · via ${esc(data.engine)}</p>
+      <div class="grid">${(data.items || []).map(card).join('')}</div>`;
+  };
+  document.getElementById('ff').onsubmit = (e) => { e.preventDefault(); const fd = new FormData(e.target); go({ q: fd.get('q'), min: fd.get('min'), max: fd.get('max'), location: fd.get('location'), sort: fd.get('sort') }); };
+  await go({ q: initial || url.get('q') || '' });
 }
 
 async function vCategory(id) {
-  const { data } = await api('/api/search?category=' + encodeURIComponent(id) + '&limit=24');
-  app.innerHTML = `<h2>Category (${data.count})</h2>
-    <div class="grid">${(data.items || []).map((i) => `
-      <div class="card"><h3><a href="#/${i.kind === 'product' ? 'p' : 's'}/${i.id}">${esc(i.title)}</a></h3>
-      <div class="price">${kobo(i.price_kobo)}</div></div>`).join('')}</div>`;
+  const cats = await api('/api/categories');
+  const flat = [];
+  const walk = (list) => (list || []).forEach((c) => { flat.push(c); walk(c.children); });
+  walk(cats.data.categories);
+  const cat = flat.find((c) => c.id === id);
+  app.innerHTML = `<h2>${esc(cat ? cat.name : 'Category')}</h2>${filterBar({})}<div id="res">${loading}</div>`;
+  const go = async (vals) => {
+    const data = await runSearch({ ...vals, category: id });
+    document.getElementById('res').innerHTML = `<p class="muted">${data.count} result(s)</p><div class="grid">${(data.items || []).map(card).join('')}</div>`;
+  };
+  document.getElementById('ff').onsubmit = (e) => { e.preventDefault(); const fd = new FormData(e.target); go({ q: fd.get('q'), min: fd.get('min'), max: fd.get('max'), location: fd.get('location'), sort: fd.get('sort') }); };
+  await go({});
 }
 
 async function vDetail(kind, id) {
@@ -67,14 +135,23 @@ async function vDetail(kind, id) {
   if (status !== 200) { app.innerHTML = errBox('Listing not found.'); return; }
   const item = data.product || data.service;
   const who = data.seller || data.provider || {};
-  app.innerHTML = `<div class="card"><h2>${esc(item.title)}</h2>
-    <div class="price">${kobo(item.priceKobo)}</div>
+  const revs = await api(`/api/reviews?listing=${kind === 'p' ? 'product' : 'service'}:${id}`);
+  const avg = revs.data.reviews.length === 0 ? 0 : revs.data.reviews.reduce((s, r) => s + r.rating, 0) / revs.data.reviews.length;
+  const letter = esc((item.title || '?').trim().charAt(0).toUpperCase());
+  app.innerHTML = `<div class="gallery" ${gradient(item.id)}>${letter}</div>
+    <div class="card"><h2 style="margin-top:0">${esc(item.title)}</h2>
+    <div class="price" style="font-size:22px">${kobo(item.priceKobo)}</div>
+    <div>${stars(avg)} <span class="muted">${avg ? avg.toFixed(1) : 'No ratings yet'} (${revs.data.reviews.length})</span></div>
     <p>${esc(item.description || '')}</p>
-    <div class="muted">Seller: ${esc(who.name || '')} ${who.verificationLevel > 0 ? '<span class="badge">Verified</span>' : ''}${item.location ? ' · ' + esc(item.location) : ''}${item.stock != null ? ' · Stock: ' + item.stock : ''}</div>
+    <div class="muted">Seller: <a href="#/store/${who.id || ''}">${esc(who.name || '')}</a> ${who.verificationLevel > 0 ? '<span class="badge">✓ Verified</span>' : '<span class="badge gray">Unverified</span>'}${item.location ? ' · ' + esc(item.location) : ''}${item.stock != null ? ' · Stock: ' + item.stock : ''}${item.condition ? ' · ' + esc(item.condition) : ''}</div>
     <div class="row" style="margin-top:12px">
-      ${kind === 'p' ? `<button data-add="${item.id}">Add to cart</button>` : ''}
-      <button class="secondary" data-chat="${who.id || ''}">Chat seller</button>
-    </div></div>`;
+      ${kind === 'p' ? `<button data-add="${item.id}" class="accent">Add to cart</button>` : ''}
+      <button class="secondary" data-chat="${who.id || ''}">💬 Chat seller</button>
+      <button class="secondary" data-share="1">🔗 Share</button>
+      <button class="secondary" data-report="1">🚩 Report</button>
+    </div></div>
+    <div class="section-title"><span class="dot"></span>Reviews</div>
+    <div id="revs">${(revs.data.reviews || []).map((r) => `<div class="card" style="margin-bottom:10px">${stars(r.rating)} <b>${esc(r.rating)}/5</b><p>${esc(r.body || '')}</p>${r.response ? `<p class="muted">Seller: ${esc(r.response)}</p>` : ''}</div>`).join('') || '<p class="muted">No reviews yet — buy it and be the first.</p>'}</div>`;
   const add = app.querySelector('[data-add]');
   if (add) add.onclick = async () => {
     if (!getToken()) { location.hash = '#/auth'; return; }
@@ -82,16 +159,43 @@ async function vDetail(kind, id) {
     const items = (cart.data.items || []).map((l) => ({ product_id: l.product_id, qty: l.qty }));
     items.push({ product_id: item.id, qty: 1 });
     const r = await api('/api/cart', { method: 'POST', body: { items } });
-    if (r.status === 200) location.hash = '#/cart'; else app.insertAdjacentHTML('beforeend', errBox(r.data.error || 'Cannot add'));
+    if (r.status === 200) { toast('Added to cart ✓'); location.hash = '#/cart'; }
+    else toast(r.data.error || 'Cannot add');
   };
   const chat = app.querySelector('[data-chat]');
   if (chat) chat.onclick = async () => {
     if (!getToken()) { location.hash = '#/auth'; return; }
-    const me = await refreshMe();
+    if (!chat.dataset.chat) { toast('Seller unavailable'); return; }
     const r = await api('/api/conversations', { method: 'POST', body: { with_user_id: chat.dataset.chat } });
-    void me;
     if (r.data.conversation) location.hash = '#/messages/' + r.data.conversation.id;
+    else toast(r.data.error || 'Cannot start chat');
   };
+  app.querySelector('[data-share]').onclick = async () => {
+    try { await navigator.clipboard.writeText(location.href); toast('Link copied ✓'); }
+    catch { prompt('Copy this link:', location.href); }
+  };
+  app.querySelector('[data-report]').onclick = async () => {
+    if (!getToken()) { location.hash = '#/auth'; return; }
+    const reason = prompt('Why are you reporting this listing?');
+    if (!reason) return;
+    const r = await api('/api/reports', { method: 'POST', body: { target_type: 'listing', target_id: item.id, reason } });
+    toast(r.status === 201 ? 'Reported — thank you ✓' : (r.data.error || 'Failed'));
+  };
+}
+
+async function vStore(userId) {
+  app.innerHTML = loading;
+  const [bizs, prods, svcs] = await Promise.all([
+    api('/api/businesses'), api('/api/search?limit=48'), api('/api/search?type=service&limit=48'),
+  ]);
+  const mine = (bizs.data.businesses || []).filter((b) => b.ownerId === userId);
+  const items = [...(prods.data.items || []), ...(svcs.data.items || [])].filter((i) => (i.sellerId || i.providerId) === userId);
+  const biz = mine[0];
+  app.innerHTML = `<div class="hero"><h1>${esc(biz ? biz.name : 'Storefront')}</h1>
+    <p>${esc((biz && biz.description) || '')} ${biz && biz.verificationStatus === 'verified' ? '<span class="badge">✓ Verified business</span>' : ''}</p>
+    ${biz && biz.location ? `<div style="opacity:.85">📍 ${esc(biz.location)}</div>` : ''}</div>
+    <div class="section-title"><span class="dot"></span>Listings (${items.length})</div>
+    <div class="grid">${items.map(card).join('') || '<p class="muted">Nothing listed yet.</p>'}</div>`;
 }
 
 function vAuth() {
@@ -158,20 +262,33 @@ async function vOrderDetail(id) {
   const o = data.order;
   const me = await refreshMe();
   const isBuyer = me && me.id === o.buyerId;
+  const isSeller = me && me.id === o.sellerId;
+  const flow = o.type === 'product'
+    ? ['pending', 'paid', 'processing', 'shipped', 'out_for_delivery', 'delivered', 'completed']
+    : ['pending', 'paid', 'accepted', 'scheduled', 'in_progress', 'completed', 'confirmed'];
+  const timeline = flow.map((s) => `<div class="tstep${flow.indexOf(s) <= flow.indexOf(o.status) ? ' done' : ''}">${esc(s.replace(/_/g, ' '))}</div>`).join('');
+  const NEXT = { paid: 1, processing: 1, shipped: 1, out_for_delivery: 1, delivered: 0, accepted: 1, scheduled: 1, in_progress: 1, completed: 0 };
+  const canAdvance = isSeller && NEXT[o.status] === 1;
+  const nextStatus = canAdvance ? flow[flow.indexOf(o.status) + 1] : null;
   app.innerHTML = `<div class="card"><h2>Order ${esc(o.id.slice(0, 8))}</h2>
+    <div class="timeline">${timeline}</div>
     <p>Status: <b>${esc(o.status)}</b> · Escrow: <b>${esc(data.escrow ? data.escrow.state : 'none')}</b></p>
     ${(o.items || []).map((l) => `<div>${esc(l.title || l.service_id || '')} — ${kobo(l.line_kobo || l.price_kobo)}</div>`).join('')}
     <p>Total: <b>${kobo(o.totalKobo)}</b> (fee ${kobo(o.platformKobo)})</p><div id="msg"></div>
     <div class="row">
-      ${isBuyer && ['delivered', 'completed'].includes(o.status) ? '<button id="cf">Confirm receipt</button>' : ''}
+      ${isBuyer && ['delivered', 'completed'].includes(o.status) ? '<button id="cf" class="accent">Confirm receipt ✓</button>' : ''}
+      ${canAdvance ? `<button id="adv">Mark: ${esc(nextStatus.replace(/_/g, ' '))} →</button>` : ''}
       ${!['completed', 'confirmed', 'cancelled'].includes(o.status) ? '<button id="cx" class="secondary">Cancel</button>' : ''}
-      <a class="btn secondary" href="#/orders/${o.id}/review">Leave review</a>
+      ${['completed', 'confirmed'].includes(o.status) && isBuyer ? `<a class="btn secondary" href="#/orders/${o.id}/review">Leave review</a>` : ''}
     </div></div>`;
   const msg = (ok, m) => { document.getElementById('msg').innerHTML = ok ? `<div class="ok">${esc(m)}</div>` : errBox(m); };
+  const reload = () => setTimeout(() => vOrderDetail(id), 800);
   const cf = document.getElementById('cf');
-  if (cf) cf.onclick = async () => { const r = await api(`/api/orders/${id}/confirm`, { method: 'POST', body: {} }); msg(r.status === 200, r.status === 200 ? 'Confirmed — funds released.' : (r.data.error || 'Failed')); if (r.status === 200) setTimeout(() => vOrderDetail(id), 800); };
+  if (cf) cf.onclick = async () => { const r = await api(`/api/orders/${id}/confirm`, { method: 'POST', body: {} }); msg(r.status === 200, r.status === 200 ? 'Confirmed — funds released ✓' : (r.data.error || 'Failed')); if (r.status === 200) reload(); };
+  const adv = document.getElementById('adv');
+  if (adv) adv.onclick = async () => { const r = await api(`/api/orders/${id}/status`, { method: 'PATCH', body: { status: nextStatus } }); msg(r.status === 200, r.status === 200 ? 'Updated ✓' : (r.data.error || 'Failed')); if (r.status === 200) reload(); };
   const cx = document.getElementById('cx');
-  if (cx) cx.onclick = async () => { const r = await api(`/api/orders/${id}/cancel`, { method: 'POST', body: {} }); msg(r.status === 200, r.status === 200 ? 'Cancelled.' : (r.data.error || 'Failed')); if (r.status === 200) setTimeout(() => vOrderDetail(id), 800); };
+  if (cx) cx.onclick = async () => { const r = await api(`/api/orders/${id}/cancel`, { method: 'POST', body: {} }); msg(r.status === 200, r.status === 200 ? 'Cancelled.' : (r.data.error || 'Failed')); if (r.status === 200) reload(); };
 }
 
 async function vReview(orderId) {
@@ -311,6 +428,17 @@ async function vAdmin() {
   };
 }
 
+async function vNotifs() {
+  const me = await refreshMe();
+  if (!me) { location.hash = '#/auth'; return; }
+  const { data } = await api('/api/notifications');
+  app.innerHTML = `<div class="row"><h2 style="margin-right:auto">Notifications (${data.unread} unread)</h2><button id="ra" class="secondary">Mark all read</button></div>
+    ${(data.notifications || []).map((n) => `<div class="card" style="margin-bottom:10px;${n.read_at ? 'opacity:.65' : ''}">
+      <b>${esc(n.type.replace(/_/g, ' '))}</b> <span class="muted">${esc(n.created_at || '')}</span>
+      <div class="muted">${esc(JSON.stringify(n.payload || {}))}</div></div>`).join('') || '<p class="muted">Nothing yet.</p>'}`;
+  document.getElementById('ra').onclick = async () => { await api('/api/notifications/read-all', { method: 'POST', body: {} }); vNotifs(); };
+}
+
 async function vMe() {
   const me = await refreshMe();
   if (!me) { location.hash = '#/auth'; return; }
@@ -363,6 +491,8 @@ async function route() {
     if (h === '#/admin') return vAdmin();
     if (h === '#/messages') return vMessages(null);
     if (h.startsWith('#/messages/')) return vMessages(h.slice(11));
+    if (h === '#/notifs') return vNotifs();
+    if (h.startsWith('#/store/')) return vStore(h.slice(8));
     if (h === '#/me') return vMe();
     const q = document.getElementById('q').value;
     if (q) return vSearch(q);
