@@ -202,8 +202,7 @@ async function initSchema(d) {
       status TEXT NOT NULL DEFAULT 'open',
       created_at TEXT NOT NULL
     );
-    -- Better Auth credential store (migrated from inline password_hash)
-    ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL;
+    -- Better Auth credential store (migrated from inline password_hash)    ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL;
     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS expires_at BIGINT;
     CREATE TABLE IF NOT EXISTS account (
       id TEXT PRIMARY KEY,
@@ -214,6 +213,8 @@ async function initSchema(d) {
       created_at TEXT NOT NULL,
       UNIQUE (provider, provider_account_id)
     );
+    ALTER TABLE conversations ADD COLUMN IF NOT EXISTS buyer_last_read TEXT;
+    ALTER TABLE conversations ADD COLUMN IF NOT EXISTS seller_last_read TEXT;
   `);
 }
 

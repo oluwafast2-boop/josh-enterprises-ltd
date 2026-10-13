@@ -45,6 +45,10 @@ function card(i) {
 }
 const loading = `<div class="grid"><div class="skel"></div><div class="skel"></div><div class="skel"></div></div>`;
 
+// Live polling (chat refresh). One timer at a time, always cleared on route change.
+let pollTimer = null;
+function stopPoll() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
+
 async function api(path, { method = 'GET', body = null } = {}) {
   const headers = { 'Content-Type': 'application/json' };
   const t = getToken();
@@ -150,8 +154,19 @@ async function vDetail(kind, id) {
       <button class="secondary" data-share="1">🔗 Share</button>
       <button class="secondary" data-report="1">🚩 Report</button>
     </div></div>
+    ${kind === 's' ? `<div class="card" style="margin-top:12px"><h3 style="margin-top:0">📅 Book this service</h3>
+      <form id="book" class="row"><input type="date" name="date" required style="flex:1"><input type="time" name="time" required style="flex:1"><button class="accent">Book now</button></form>
+      <div id="bookmsg"></div></div>` : ''}
     <div class="section-title"><span class="dot"></span>Reviews</div>
     <div id="revs">${(revs.data.reviews || []).map((r) => `<div class="card" style="margin-bottom:10px">${stars(r.rating)} <b>${esc(r.rating)}/5</b><p>${esc(r.body || '')}</p>${r.response ? `<p class="muted">Seller: ${esc(r.response)}</p>` : ''}</div>`).join('') || '<p class="muted">No reviews yet — buy it and be the first.</p>'}</div>`;
+  if (kind === 's') document.getElementById('book').onsubmit = async (e) => {
+    e.preventDefault();
+    if (!getToken()) { location.hash = '#/auth'; return; }
+    const fd = new FormData(e.target);
+    const r = await api('/api/orders', { method: 'POST', body: { service_id: item.id, slot: { date: fd.get('date'), time: fd.get('time') } } });
+    if (r.status === 201) location.hash = '#/orders/' + r.body.order.id;
+    else document.getElementById('bookmsg').innerHTML = errBox(r.data.error === 'bad-slot-date' ? 'Pick a future date.' : (r.data.error || 'Failed'));
+  };
   const add = app.querySelector('[data-add]');
   if (add) add.onclick = async () => {
     if (!getToken()) { location.hash = '#/auth'; return; }
@@ -274,6 +289,7 @@ async function vOrderDetail(id) {
     <div class="timeline">${timeline}</div>
     <p>Status: <b>${esc(o.status)}</b> · Escrow: <b>${esc(data.escrow ? data.escrow.state : 'none')}</b></p>
     ${(o.items || []).map((l) => `<div>${esc(l.title || l.service_id || '')} — ${kobo(l.line_kobo || l.price_kobo)}</div>`).join('')}
+    ${o.deliveryInfo && o.deliveryInfo.slot ? `<p>📅 Booked: <b>${esc(o.deliveryInfo.slot.date)} ${esc(o.deliveryInfo.slot.time)}</b></p>` : ''}
     <p>Total: <b>${kobo(o.totalKobo)}</b> (fee ${kobo(o.platformKobo)})</p><div id="msg"></div>
     <div class="row">
       ${isBuyer && ['delivered', 'completed'].includes(o.status) ? '<button id="cf" class="accent">Confirm receipt ✓</button>' : ''}
@@ -368,23 +384,50 @@ async function vListings() {
 }
 
 async function vMessages(id) {
+  stopPoll();
   if (!id) {
     const { data } = await api('/api/conversations');
     app.innerHTML = `<h2>Messages</h2>` + ((data.conversations || []).map((c) => `
       <div class="card"><a href="#/messages/${c.id}">Thread ${esc(c.id.slice(0, 8))}</a>
+      ${c.unread > 0 ? `<span class="badge amber">${c.unread} new</span>` : ''}
       <div class="muted">${esc(c.last_body || 'No messages yet')}</div></div>`).join('') || '<p class="muted">No conversations. Chat a seller from a listing page.</p>');
+    // refresh badges while inbox is open
+    let lastTotal = -1;
+    pollTimer = setInterval(async () => {
+      if ((location.hash || '') !== '#/messages') return stopPoll();
+      const r = await api('/api/conversations');
+      const total = (r.data.conversations || []).reduce((s, c) => s + (c.unread || 0), 0);
+      if (lastTotal >= 0 && total !== lastTotal) return vMessages(null);
+      lastTotal = total;
+    }, 8000);
     return;
   }
-  const { data } = await api(`/api/conversations/${id}/messages`);
-  app.innerHTML = `<h2>Thread</h2><div id="log">${(data.messages || []).map((m) => `<div class="msg" data-s="${m.sender_id}">${esc(m.body)}</div>`).join('')}</div>
-    <form id="f" class="row"><input name="body" placeholder="Message…" required style="flex:1"><button>Send</button></form><div id="msg"></div>`;
+  const paint = (msgs, meId) => msgs.map((m) => `<div class="msg ${m.sender_id === meId ? 'me' : 'them'}" data-mid="${m.id}">${esc(m.body)}</div>`).join('');
+  const first = await api(`/api/conversations/${id}/messages`);
   const me = await refreshMe();
-  app.querySelectorAll('.msg').forEach((d) => d.classList.add(d.dataset.s === (me && me.id) ? 'me' : 'them'));
+  const known = new Set((first.data.messages || []).map((m) => m.id));
+  app.innerHTML = `<h2>Thread</h2><div id="log">${paint(first.data.messages || [], me && me.id)}</div>
+    <form id="f" class="row"><input name="body" placeholder="Message…" required style="flex:1" autocomplete="off"><button>Send</button></form><div id="msg"></div><p class="muted">● Live — new messages appear automatically.</p>`;
+  const log = document.getElementById('log');
+  log.scrollTop = log.scrollHeight;
+  pollTimer = setInterval(async () => {
+    if (!(location.hash || '').startsWith('#/messages/' + id)) return stopPoll();
+    const r = await api(`/api/conversations/${id}/messages`);
+    if (r.status !== 200) return;
+    const fresh = (r.data.messages || []).filter((m) => !known.has(m.id));
+    if (fresh.length > 0) {
+      fresh.forEach((m) => known.add(m.id));
+      log.insertAdjacentHTML('beforeend', paint(fresh, me && me.id));
+      log.scrollTop = log.scrollHeight;
+      toast('New message ↓');
+    }
+  }, 4000);
   document.getElementById('f').onsubmit = async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
     const r = await api(`/api/conversations/${id}/messages`, { method: 'POST', body: { body: fd.get('body') } });
-    if (r.status === 201) vMessages(id); else document.getElementById('msg').innerHTML = errBox(r.data.error || 'Failed');
+    if (r.status === 201) { known.add(r.body.message.id); log.insertAdjacentHTML('beforeend', paint([r.body.message], me && me.id)); e.target.reset(); log.scrollTop = log.scrollHeight; }
+    else document.getElementById('msg').innerHTML = errBox(r.data.error || 'Failed');
   };
 }
 
@@ -472,6 +515,7 @@ async function vMe() {
 
 // ---------- router ----------
 async function route() {
+  stopPoll();
   const h = location.hash || '#/';
   await refreshMe();
   try {

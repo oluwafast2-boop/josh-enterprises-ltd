@@ -378,6 +378,24 @@ const cases = [
     const after = await api('/api/notifications?unread=1', { token: sellerToken });
     return after.body.unread === before.body.unread + 1 && after.body.notifications.some((n) => n.type === 'new_message');
   });
+  await t('slice5 unread badges + read', async () => {
+    const l1 = await api('/api/conversations', { token: sellerToken });
+    const unreadBefore = (l1.body.conversations.find((c) => c.id === convId) || {}).unread || 0;
+    await api(`/api/conversations/${convId}/messages`, { token: sellerToken });
+    const l2 = await api('/api/conversations', { token: sellerToken });
+    const unreadAfter = (l2.body.conversations.find((c) => c.id === convId) || {}).unread;
+    return unreadBefore >= 1 && unreadAfter === 0;
+  });
+  await t('slot booking persists + validates', async () => {
+    const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+    const good = await api('/api/orders', { method: 'POST', token: buyerToken, body: { service_id: svcId, slot: { date: tomorrow, time: '10:30' } } });
+    const past = await api('/api/orders', { method: 'POST', token: buyerToken, body: { service_id: svcId, slot: { date: '2020-01-01', time: '10:30' } } });
+    const badTime = await api('/api/orders', { method: 'POST', token: buyerToken, body: { service_id: svcId, slot: { date: tomorrow, time: 'nope' } } });
+    if (good.status !== 201) return false;
+    const g = await api(`/api/orders/${good.body.order.id}`, { token: buyerToken });
+    await api(`/api/orders/${good.body.order.id}/cancel`, { method: 'POST', token: buyerToken, body: {} });
+    return g.body.order.deliveryInfo.slot.date === tomorrow && past.status === 400 && badTime.status === 400;
+  });
 
   // ---- Slice 6: reviews, refunds, disputes, admin ----
   // orderId (slice 4) is completed product order by buyerToken from sellerToken.

@@ -144,21 +144,32 @@ async function handler(req, res) {
     }
   }
 
-  // POST /api/orders {service_id} — direct service order
+  // POST /api/orders {service_id, slot?: {date, time}} — direct service order/booking
   if (req.method === 'POST' && pathname === '/api/orders') {
     if (!body.service_id) return send(res, 400, { ok: false, error: 'service-required' });
     const s = await db.query("SELECT * FROM services WHERE id = $1 AND status = 'published'", [body.service_id]);
     if (s.rows.length === 0) return send(res, 400, { ok: false, error: 'not-for-sale' });
     const svc = s.rows[0];
     if (svc.provider_id === user.id) return send(res, 400, { ok: false, error: 'cannot-buy-own' });
+    let slot = null;
+    if (body.slot) {
+      const date = String(body.slot.date || '');
+      const time = String(body.slot.time || '');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date < new Date().toISOString().slice(0, 10)) {
+        return send(res, 400, { ok: false, error: 'bad-slot-date' });
+      }
+      if (!/^\d{2}:\d{2}$/.test(time)) return send(res, 400, { ok: false, error: 'bad-slot-time' });
+      slot = { date, time };
+    }
     const platform = fee(svc.price_kobo);
     const id = crypto.randomUUID();
+    const deliveryInfo = { ...(body.delivery_info || {}), ...(slot ? { slot } : {}) };
     await db.query(
       `INSERT INTO orders (id, buyer_id, seller_id, type, status, subtotal_kobo, delivery_kobo, platform_kobo, total_kobo, items, delivery_info, created_at)
        VALUES ($1,$2,$3,'service','pending',$4,0,$5,$6,$7,$8,$9)`,
       [id, user.id, svc.provider_id, svc.price_kobo, platform, svc.price_kobo + platform,
        JSON.stringify([{ service_id: svc.id, title: svc.title, price_kobo: svc.price_kobo }]),
-       body.delivery_info || null, new Date().toISOString()]
+       deliveryInfo, new Date().toISOString()]
     );
     const r = await db.query('SELECT * FROM orders WHERE id = $1', [id]);
     await notify.create(db, svc.provider_id, 'order_placed', { order_id: id, total_kobo: svc.price_kobo + platform, buyer_id: user.id });

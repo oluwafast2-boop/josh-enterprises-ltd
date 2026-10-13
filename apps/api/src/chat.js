@@ -28,11 +28,13 @@ async function handler(req, res) {
     try { body = await readBody(req); } catch { return send(res, 400, { ok: false, error: 'bad-json' }); }
   }
 
-  // GET /api/conversations — own threads, latest message preview
+  // GET /api/conversations — own threads, latest message preview + unread count
   if (req.method === 'GET' && parts.length === 2) {
     const r = await db.query(
       `SELECT c.*, (SELECT body FROM messages m WHERE m.conversation_id = c.id ORDER BY m.created_at DESC LIMIT 1) AS last_body,
-              (SELECT created_at FROM messages m WHERE m.conversation_id = c.id ORDER BY m.created_at DESC LIMIT 1) AS last_at
+              (SELECT created_at FROM messages m WHERE m.conversation_id = c.id ORDER BY m.created_at DESC LIMIT 1) AS last_at,
+              (SELECT COUNT(*)::int FROM messages m WHERE m.conversation_id = c.id AND m.sender_id <> $1
+                 AND m.created_at > COALESCE(CASE WHEN c.buyer_id = $1 THEN c.buyer_last_read ELSE c.seller_last_read END, '1970-01-01')) AS unread
        FROM conversations c WHERE c.buyer_id = $1 OR c.seller_id = $1 ORDER BY last_at DESC NULLS LAST, c.created_at DESC LIMIT 50`,
       [user.id]);
     return send(res, 200, { ok: true, conversations: r.rows });
@@ -93,8 +95,10 @@ async function handler(req, res) {
   if (p.code) return send(res, p.code, { ok: false, error: p.code === 404 ? 'not-found' : 'forbidden' });
   const other = p.conv.buyer_id === user.id ? p.conv.seller_id : p.conv.buyer_id;
 
-  // GET /api/conversations/:id/messages
+  // GET /api/conversations/:id/messages (marks own side read)
   if (req.method === 'GET' && parts[3] === 'messages') {
+    const col = p.conv.buyer_id === user.id ? 'buyer_last_read' : 'seller_last_read';
+    await db.query(`UPDATE conversations SET ${col} = $1 WHERE id = $2`, [new Date().toISOString(), parts[2]]);
     const r = await db.query('SELECT id, sender_id, body, attachments, created_at FROM messages WHERE conversation_id = $1 ORDER BY created_at ASC LIMIT 100', [parts[2]]);
     return send(res, 200, { ok: true, messages: r.rows });
   }
